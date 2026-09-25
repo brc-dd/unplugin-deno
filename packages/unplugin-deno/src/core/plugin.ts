@@ -1,7 +1,8 @@
 import type { ExternalIdResult, UnpluginFactory, UnpluginOptions } from 'unplugin'
-import { DenoPluginError } from '../diagnostics/errors.js'
+import { esbuildSetup } from '../hosts/esbuild/index.js'
 import { rolldownHooks } from '../hosts/rolldown/index.js'
 import { rollupHooks } from '../hosts/rollup/index.js'
+import { viteHooks } from '../hosts/vite/index.js'
 import type { HostResolvedId } from '../hosts/shared.js'
 import { toRollupResult } from '../hosts/shared.js'
 import type { AstLang, AstParser } from './attributes.js'
@@ -28,19 +29,8 @@ const ROLLUP_FAMILY: ReadonlySet<string> = new Set(['rollup', 'rolldown', 'vite'
  */
 export const unpluginFactory: UnpluginFactory<Options | undefined, false> = (options, meta) => {
   if (meta.framework === 'esbuild') {
-    resolveOptions(options, { root: process.cwd(), env: process.env })
-    return {
-      name: PLUGIN_NAME,
-      esbuild: {
-        setup() {
-          throw new DenoPluginError(
-            'ENGINE_UNAVAILABLE',
-            'The esbuild adapter of unplugin-deno lands in the next phase.',
-            { hint: 'Use unplugin-deno with Rolldown, Rollup or Vite meanwhile.' },
-          )
-        },
-      },
-    }
+    const state = new PluginState(options, meta.framework)
+    return { name: PLUGIN_NAME, esbuild: { setup: esbuildSetup(state) } }
   }
   if (!ROLLUP_FAMILY.has(meta.framework)) {
     resolveOptions(options, { root: process.cwd(), env: process.env })
@@ -50,6 +40,7 @@ export const unpluginFactory: UnpluginFactory<Options | undefined, false> = (opt
   const plugin = genericHooks(state)
   if (meta.framework === 'rolldown') plugin.rolldown = rolldownHooks(state)
   if (meta.framework === 'rollup') plugin.rollup = rollupHooks(state)
+  if (meta.framework === 'vite') plugin.vite = viteHooks(state)
   return plugin
 }
 

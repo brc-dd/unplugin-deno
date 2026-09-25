@@ -48,7 +48,9 @@ describe('unpluginFactory', () => {
       'transform',
       'watchChange',
     ]
-    expect(Object.keys(unpluginFactory({}, meta('vite'))).toSorted()).toEqual(generic)
+    expect(Object.keys(unpluginFactory({}, meta('vite'))).toSorted()).toEqual(
+      [...generic, 'vite'].toSorted(),
+    )
     const rolldown = unpluginFactory({}, meta('rolldown'))
     expect(Object.keys(rolldown).toSorted()).toEqual([...generic, 'rolldown'].toSorted())
     expect(Object.keys(rolldown.rolldown ?? {}).toSorted()).toEqual([
