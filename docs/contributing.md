@@ -107,6 +107,11 @@ Each fixture in `packages/unplugin-deno/test/fixtures/<name>/` is a complete, mi
   first run (CI caches `DENO_DIR`). Generate the lock with `deno install` in a copy of the fixture **outside the
   repository** (Deno would otherwise pick up the ancestor `package.json` and `deno.json`), with a scratch `DENO_DIR`.
 - Fixtures that reproduce an upstream issue mention it in `fixture.json` (`"issues": ["denoland/deno-vite-plugin#98"]`).
+- A fixture may commit stub packages in its own `node_modules/` (`core-import-map-precedence`); `.gitignore` re-includes
+  `packages/unplugin-deno/test/fixtures/**/node_modules/`. Never run `deno install` inside the repository copy of a
+  fixture: tests work on temporary copies (`tempProject`), and `nodeModulesDir: "auto"` installs there.
+- `oxfmt` formats fixture sources too (TypeScript, JSON, CSS), so expected values must match the formatted files.
+  Binary data files use the `.bin` extension, which `.gitattributes` marks as binary.
 
 Borrowed material: when a fixture or test case is adapted from another project (for example the WICG import-map
 reference tests or a Deno test case), keep its license terms, add a `SOURCE` note in that fixture's `fixture.json`
@@ -125,6 +130,14 @@ not paste foreign layouts wholesale.
   `<deno-dir>`, `<hash>` for hashes, LF newlines; also applied to snapshots by the serializer registered in
   `test/helpers/setup.ts`) and `runtime`. Path helpers take an explicit `posix`/`win32` flavour so Windows cases
   run on every OS.
+- Integration tests build fixtures through `test/helpers/build.ts`: `buildWithRolldown(fixtureDir, entries,
+  pluginOptions, rolldownOptions)` and `buildWithRollup(…)` (the plugin first, then for Rollup the small esbuild
+  TypeScript and JSON plugins of `test/helpers/rollup-ts.ts`) write ES modules to a temporary directory with the shared
+  test `DENO_DIR`, and return the chunks (code, module ids and sizes, imports) and the host's logs; `evaluateModule`
+  imports an output file in the current runtime (`installCssStyleSheet` provides a `CSSStyleSheet` stand-in).
+  `test/integration/core-suite.ts` holds the core fixture tests; `rolldown.test.ts` and `rollup.test.ts` run it, and a
+  fixture a host cannot build is skipped there with its reason (`SKIPPED`). Tests that need the `deno` binary skip
+  when it is missing (CI has it only on the `deno` rows).
 - Keep tests hermetic: fixtures pin versions; network access only for the pinned remote fixtures. The engine reads
   `DENO_DIR` from the environment, so tests set it with `vi.stubEnv('DENO_DIR', await denoDir())`: `denoDir()` is
   `$UNPLUGIN_DENO_TEST_DENO_DIR` (CI points it at a cached directory) or `<os temp>/unplugin-deno-test/deno-dir`,

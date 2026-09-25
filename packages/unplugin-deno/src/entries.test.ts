@@ -41,8 +41,8 @@ describe('host entries', () => {
     expect(names(bun())).toContain(PLUGIN_NAME)
   })
 
-  it('leaves esbuild builds untouched (no catch-all onResolve)', async () => {
-    const result = await build({
+  it('fails esbuild builds with ENGINE_UNAVAILABLE until the esbuild adapter lands', async () => {
+    const failure: unknown = await build({
       stdin: { contents: 'import { join } from "node:path"; export const x = join("a", "b")' },
       bundle: true,
       format: 'esm',
@@ -50,9 +50,9 @@ describe('host entries', () => {
       write: false,
       logLevel: 'silent',
       plugins: [esbuild()],
-    })
-    const [output] = result.outputFiles
-    expect(output?.text).toContain('from "node:path"')
-    expect(output?.text).toContain('join("a", "b")')
+    }).catch((error: unknown) => error)
+    expect(String((failure as Error).message)).toContain('The esbuild adapter of unplugin-deno')
+    const [error] = (failure as { errors?: Array<{ detail?: unknown }> }).errors ?? []
+    expect(error?.detail).toMatchObject({ code: 'ENGINE_UNAVAILABLE' })
   })
 })

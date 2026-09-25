@@ -1,0 +1,6 @@
+{
+  "nodeModulesDir": "none",
+  "imports": {
+    "kleur": "npm:kleur@^4"
+  }
+}

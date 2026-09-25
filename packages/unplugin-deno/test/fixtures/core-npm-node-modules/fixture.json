@@ -1,0 +1,17 @@
+{
+  "title": "nodeModulesDir \"auto\": npm packages installed into node_modules/.deno are redirected to the host resolver (subpaths, CommonJS, sideEffects)",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown"],
+  "expect": {
+    "values": {
+      "green": "function",
+      "ms": 172800000,
+      "chunked": [
+        [1, 2],
+        [3, 4]
+      ],
+      "stripped": "cake"
+    },
+    "maxBytes": 20000
+  }
+}

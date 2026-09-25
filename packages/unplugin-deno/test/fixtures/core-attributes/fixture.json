@@ -1,0 +1,17 @@
+{
+  "title": "Import attributes: text, bytes and css become ?deno-type= marker modules, json stays with the host; local and remote targets, static and dynamic imports",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup"],
+  "issues": ["rolldown/rolldown#2758"],
+  "expect": {
+    "values": {
+      "text": "hello text\n",
+      "bytes": [0, 1, 2, 250, 255],
+      "json": {
+        "answer": 42
+      },
+      "css": "a {\n  color: red;\n}\n",
+      "remoteJsonName": "kleur"
+    }
+  }
+}

@@ -1,4 +1,6 @@
 node_modules/
+# Fixtures may commit stub packages (test/fixtures/<name>/node_modules/).
+!packages/unplugin-deno/test/fixtures/**/node_modules/
 dist/
 coverage/
 *.tsbuildinfo

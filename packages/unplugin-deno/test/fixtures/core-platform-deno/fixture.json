@@ -1,0 +1,16 @@
+{
+  "title": "platform: 'deno' server output: npm:, jsr: and node: imports stay external and pinned; local and https: modules are bundled",
+  "entries": ["src/server.ts"],
+  "hosts": ["rolldown", "rollup"],
+  "expect": {
+    "externals": ["npm:kleur@4.1.5", "jsr:@std/path@1.1.6", "node:fs"],
+    "ranges": ["npm:kleur@^4", "jsr:@std/path@^1"],
+    "values": {
+      "joined": "a/b",
+      "closest": "help",
+      "answer": 42,
+      "exists": "function",
+      "bold": "function"
+    }
+  }
+}

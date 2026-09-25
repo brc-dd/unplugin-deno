@@ -1,0 +1,15 @@
+{
+  "title": "jsr:, npm:, https: (with relative imports), data:, node:, local and import-map aliases bundled together; a ?query import stays with the host",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup"],
+  "expect": {
+    "values": {
+      "joined": "a/b",
+      "closest": "help",
+      "answer": 84,
+      "sep": "/",
+      "greeting": "hello, deno",
+      "message": "a raw message\n"
+    }
+  }
+}

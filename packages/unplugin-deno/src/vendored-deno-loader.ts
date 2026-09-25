@@ -7,6 +7,7 @@
  *
  * @module
  */
+import { readFile } from 'node:fs/promises'
 import type * as DenoLoader from '../vendor/deno-loader/mod.js'
 import type { LoaderFetch, LoaderLogger } from '../vendor/deno-loader/hooks.js'
 import { setFetch, setLogger } from '../vendor/deno-loader/hooks.js'
@@ -61,4 +62,18 @@ export function setLoaderLogger(logger: LoaderLogger | null): void {
  */
 export function setLoaderFetch(fetch: LoaderFetch | null): void {
   setFetch(fetch)
+}
+
+let version: Promise<string | undefined> | undefined
+
+/**
+ * The version of the vendored `@deno/loader` (`vendor/deno-loader/VERSION`), for debug output;
+ * `undefined` when the file cannot be read.
+ */
+export function vendoredLoaderVersion(): Promise<string | undefined> {
+  version ??= readFile(new URL('../vendor/deno-loader/VERSION', import.meta.url), 'utf8').then(
+    (text) => text.trim() || undefined,
+    () => undefined,
+  )
+  return version
 }

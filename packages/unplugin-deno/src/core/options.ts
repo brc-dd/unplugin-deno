@@ -270,13 +270,16 @@ export function defaultCacheDir(workspaceRoot: string): string {
 }
 
 /** Whether external `npm:`/`jsr:` specifiers are pinned for `platform`. */
-export function pinExternalsFor(options: ResolvedOptions, platform: Platform): boolean {
+export function pinExternalsFor(
+  options: Pick<ResolvedOptions, 'pinExternals'>,
+  platform: Platform,
+): boolean {
   return options.pinExternals ?? platform === 'deno'
 }
 
 /** The `denoGlobals` behaviour for `platform`. */
 export function denoGlobalsFor(
-  options: ResolvedOptions,
+  options: Pick<ResolvedOptions, 'denoGlobals'>,
   platform: Platform,
 ): 'error' | 'warn' | 'off' {
   return options.denoGlobals ?? (platform === 'browser' ? 'warn' : 'off')

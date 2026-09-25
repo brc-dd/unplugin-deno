@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "kleur": "npm:kleur@^4",
+    "@app/greet": "./src/greet.ts"
+  }
+}

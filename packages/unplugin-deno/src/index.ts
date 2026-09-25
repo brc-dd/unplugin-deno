@@ -16,6 +16,8 @@ export type {
   Options,
   Pattern,
   Platform,
+  ResolvedConfigOption,
+  ResolvedOptions,
   ResolveHook,
   ResolveHookContext,
   ResolveHookResult,

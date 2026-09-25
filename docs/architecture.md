@@ -503,6 +503,77 @@ plus the hint.
 workspace root, members, lockfile presence, `nodeModulesDir` + detected layout, platform + conditions per
 environment, `cacheDir`/generation.
 
+### 5.9 Corrections from the implementation (M1, verified with Rolldown 1.2.11 and Rollup 4.63.5)
+
+Found while implementing `src/core/` (each point has a test in `core/**/*.test.ts` or `test/integration/`):
+
+- **State.** The per-build state is `core/state.ts` (`PluginState`): options are resolved at plugin creation (to fail
+  early) and again against the host root once the host reports it (Rolldown `cwd`); adapters feed host facts through
+  `setHints` and the logging context through `setLogTarget`. `HostContext` gained `conditionsHint`.
+- **§5.1 `npm: 'auto'`** follows `nodeModulesDir`, not whether a layout exists: `none` → `deno-cache`, `auto`/`manual`
+  → `node_modules`. `auto` installs into `node_modules/.deno` only on the first resolution, and with `none` the loader
+  uses `DENO_DIR` even when a `node_modules` directory exists.
+- **§5.2 filter.** The import-map keys are known only once the project is loaded. Rolldown reads hook filters when it
+  builds its plugin bindings, which happens after the `options` hook, so the Rolldown adapter loads the project there and
+  narrows the filter; watch mode (the import map can change) and the generic hooks (Vite) keep a broad filter: owned
+  schemes, the marker and every bare specifier. With the `deno-cache` strategy the broad filter is the precise one. For
+  the Deno platform the `package.json` dependency names are added (they are pinned as externals).
+- **§5.2 algorithm.** `exclude`, the `importers` filter and the `resolve` option hook run first. The import map is not
+  applied inside npm packages (Deno uses Node resolution there): bare imports from `node_modules` files are the host's
+  (`node_modules` strategy), from global-cache files the engine's. Relative specifiers from mirror files are rewritten
+  paths, so they resolve as paths relative to the mirror file; only a missing file goes to the engine with the source
+  URL as referrer. A remote URL keeps its query (part of the resource); other queries (`?raw`) are appended to the
+  result. Two outcomes were added: `host-marker` (a marker on an import the host resolves: local relative paths and
+  unmapped bare names; the adapter resolves `request` with `this.resolve(…, { skipSelf: true })` and adds the marker)
+  and `virtual` (`\0deno:empty`). A missing optional npm dependency becomes an external (it fails at runtime, as in
+  Deno). `pinExternals: false` keeps the *mapped* specifier (`kleur` → `npm:kleur@^4`), so the output needs no import
+  map. `bundle`/`external` patterns also match the version-less spelling (`npm:kleur` covers `npm:kleur@^4/colors`)
+  and, like esbuild, a package prefix.
+- **§5.3 layout details.** An empty path segment (`a//b`, a trailing `/`) is `~e`; Windows device names (`con`,
+  `nul.js`) get their first character percent-encoded; segments longer than 200 characters are shortened to
+  150 + `~h<8 hex>` (extension kept); the query hash is sha256 of `?query` (with the `?`); `data:` names are
+  `<16 hex><media-type extension>` plus the code rule (`.ts` → `.ts.js`). A raw copy whose name ends in `.js`/`.mjs`/`.cjs`
+  gets `~raw` before the extension so it cannot collide with the code file of the same URL. `ensureMirrored(url, kind)`
+  takes `kind: 'module' | 'asset'`; assets (targets of `json`/`text`/`bytes`/`css` imports) and modules whose media type
+  is not code (Wasm, JSON) are written raw from a `bytes` load. Files are named by the final URL after redirects; the
+  manifest records `redirects`.
+- **§5.3 rewriting.** Rewritten specifiers are relative *paths* with `/` separators (`./join.ts.js`), never URL
+  references: hosts resolve them as file paths (`%` in a sanitised name stays literal). A local target (a JSR package
+  linked into the workspace) is rewritten to the relative path of the local file. A dynamic import the engine cannot
+  resolve is left unchanged (it fails at runtime, like in Deno); a static one fails the build. `resolveId` returns only
+  after the whole dependency closure is written (hosts resolve the relative paths natively); cycles are fine because
+  writing a module only *loads* its dependencies to compute their paths.
+- **§5.3 loader facts.** The loader's graph records `css` import attributes (and `text`/`bytes` without
+  `"unstable": ["raw-imports"]`) as errors, after which `resolve` and even `load(url, 'bytes')` of that URL fail on that
+  loader. Attribute targets that are relative or absolute URLs therefore resolve by URL arithmetic, and raw loads the
+  main engine refuses go to a second, never-seeded engine (`PluginState.engine('raw')`). The integrity is sha256 of the
+  original source: `sourcesContent[0]` of the loader's map for transpiled modules, the bytes otherwise; it equals the
+  `deno.lock` `remote` hash. Deno locks `json` imports but not `text`/`bytes`/`css` ones, so only those are checked.
+  (Engine fix: the wasm deserialises `newestDependencyDate` only as an RFC 3339 string, not as a `Date`;
+  `engine/loader/engine.ts` converts it.)
+- **§5.3 manifest.** `{ version: 1, generation, modules: {url → entry}, assets: {url → entry}, redirects }` with entries
+  `{ file, mediaType, integrity, deps, assets }`; it is merged with the file on disk when flushed (at `buildEnd`, and in
+  `closeBundle`), so concurrent processes only lose cache entries, never files. Reverse lookups (`urlForMirrorPath`)
+  read the manifest of the path's generation.
+- **§5.4.** A redirect is produced only when the specifier names the package (so `name + subpath` resolves from the
+  package directory); other npm files are paths. Rollup without a node-resolve plugin answers `this.resolve` with `null`
+  and gets `fallbackPath`. Global-cache paths carry `moduleSideEffects: false` for `"sideEffects": false` packages, so
+  tree-shaking matches the redirect route (lodash-es `chunk`: under 20 KB either way).
+- **§5.5.** The lexer is es-module-lexer 3's full build (named fields; `attributesStart` points at the `{`); it drops a
+  clause with a trailing comma (`with { type: "text", }`), which `utils/lexer.ts` finds itself. JSX and TSX are not
+  lexable: the pre-pass then uses the host parser (`this.parse`, oxc with `lang` from the extension). Rollup resolves each
+  specifier once per module whatever its attributes (`import a from "x" with { type: "text" }` and `… "bytes"` in one
+  module become one module, with `INCONSISTENT_IMPORT_ATTRIBUTES`), so the pre-pass runs on Rollup too; Rollup's
+  `resolveId` still turns `attributes.type` into the marker for code the pre-pass cannot read. `text` and `css` targets
+  must be UTF-8 (`UNSUPPORTED_MEDIA_TYPE`); `bytes` above 1 KiB are base64-decoded with `atob` at runtime.
+- **§5.6.** A Rolldown build without `platform` counts as `browser` (Rolldown's default for ES output). Rollup has no
+  platform: with a `deno.json` it derives `deno`, so browser or Node builds with Rollup set `platform`.
+- **§5.8.** `addEntrypoints` diagnostics with a code (e.g. `CACHED_ONLY_MISS`) are warnings; the others are debug
+  output, because the graph also holds imports the host owns (`?raw`, packages from `node_modules`, other plugins'
+  virtual ids) that Deno reports as errors, and failing owned imports fail in `resolveId` with their importer. The host
+  logger sends warnings (and `error` lines, never thrown: Rollup's `this.error` throws) through `this.warn`, info and
+  debug lines through `this.info`, and falls back to stderr. The debug summary is logged by `configure`.
+
 ---
 
 ## 6. Host adapters (`src/hosts/`)
@@ -587,6 +658,26 @@ Rsbuild does not call `rspack(compiler)`; provide `rsbuild.setup(api)` using `ap
 Bun: unplugin's Bun target; `onResolve` has no `with`, so attributes rely on the transform pre-pass. `register`:
 reuse the factory through unplugin's `unloader` target (Node `module.registerHooks`, sync) with a worker +
 `Atomics.wait` bridge around the async engine; Bun uses `Bun.plugin` with `--preload`.
+
+### 6.8 Corrections from the implementation (Rolldown 1.2.11, Rollup 4.63.5)
+
+- **Rolldown.** `options(inputOptions)` records `cwd` (host root), `platform` (`undefined` → `browser`),
+  `resolve.conditionNames` and `input`, loads the project and narrows the `resolveId` and `load` filters (see §5.9).
+  `resolveId: { filter, handler(id, importer, { kind, isEntry }) }`; npm redirects and host markers call
+  `this.resolve(request, importer, { skipSelf: true, kind })` and forward `moduleSideEffects`. `load` returns
+  `moduleType: 'js'` for mirror files, markers and `\0deno:empty` (Rolldown would otherwise pick a module type from
+  `.txt`/`.css`). `closeBundle` flushes the manifest and, outside watch mode, disposes the engines; the generic
+  `buildEnd` does the same.
+- **Rollup.** `resolveId(source, importer, { attributes, isEntry })` has no id filter: imports carrying attributes
+  (local `./data.txt` included) must reach it, and filters only see the id. `load: { filter, handler }` uses the native
+  filter on Rollup ≥ 4.40 and checks the id again for older versions. The transform pre-pass is on (§5.9, §5.5). Rollup
+  cannot load TypeScript, JSON or CommonJS and resolves nothing from `node_modules` by itself: users add their usual
+  plugins; the integration tests use a small esbuild TypeScript plugin and a JSON plugin (`test/helpers/rollup-ts.ts`)
+  and skip the CommonJS fixtures.
+- **Vite (generic hooks only, M1 next phase).** A Vite 8 build of `core-basic` and `core-remote-mirror` works with the
+  generic hooks when `cwd` is set (the Vite adapter will take `root` from `configResolved`); `css` markers collide with
+  `vite:css`, which claims `*.css?…` ids, and need the Vite adapter.
+- **esbuild.** Until its adapter lands, `esbuild.setup` throws `ENGINE_UNAVAILABLE`.
 
 ---
 

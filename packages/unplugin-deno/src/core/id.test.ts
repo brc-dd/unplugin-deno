@@ -1,9 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DENO_TYPE_ID_FILTER,
   DENO_TYPE_PARAM,
+  DENO_VIRTUAL_ID_FILTER,
   EMPTY_MODULE_ID,
+  isDenoVirtualId,
+  isForeignId,
   isMirrorPath,
+  isOwnedSpecifier,
   isVirtualId,
+  pathPrefixFilter,
   readDenoType,
   splitQuery,
   stripDenoType,
@@ -143,5 +149,55 @@ describe('isMirrorPath', () => {
     ['/proj/node_modules/.unplugin-deno/x.js', false],
   ])('win32: %j -> %s', (id, expected) => {
     expect(isMirrorPath(id, winCache, 'win32')).toBe(expected)
+  })
+})
+
+describe('foreign and own virtual ids', () => {
+  it("tells other plugins' ids from the plugin's own", () => {
+    expect(isDenoVirtualId(EMPTY_MODULE_ID)).toBe(true)
+    expect(isDenoVirtualId('\0virtual:x')).toBe(false)
+    expect(isForeignId('\0virtual:x')).toBe(true)
+    expect(isForeignId('virtual:answer')).toBe(true)
+    expect(isForeignId(EMPTY_MODULE_ID)).toBe(false)
+    expect(isForeignId('jsr:@std/path')).toBe(false)
+    expect(isForeignId('/src/virtual:x.ts')).toBe(false)
+  })
+
+  it('matches filters for markers and own virtual ids', () => {
+    expect(DENO_TYPE_ID_FILTER.test('/a.txt?deno-type=text')).toBe(true)
+    expect(DENO_TYPE_ID_FILTER.test('/a.txt?raw&deno-type=text')).toBe(true)
+    expect(DENO_TYPE_ID_FILTER.test('/a.txt?raw')).toBe(false)
+    expect(DENO_VIRTUAL_ID_FILTER.test(EMPTY_MODULE_ID)).toBe(true)
+    expect(DENO_VIRTUAL_ID_FILTER.test('\0virtual:x')).toBe(false)
+  })
+})
+
+describe('isOwnedSpecifier', () => {
+  it('applies the filter to ids that are not foreign', () => {
+    const filter = /^jsr:|^[^./\0]/g
+    expect(isOwnedSpecifier('jsr:@std/path', filter)).toBe(true)
+    expect(isOwnedSpecifier('jsr:@std/path', filter)).toBe(true)
+    expect(isOwnedSpecifier('virtual:x', filter)).toBe(false)
+    expect(isOwnedSpecifier('\0x', filter)).toBe(false)
+    expect(isOwnedSpecifier('./x.ts', filter)).toBe(false)
+  })
+})
+
+describe('pathPrefixFilter', () => {
+  it('matches ids under a POSIX directory', () => {
+    const filter = pathPrefixFilter('/proj/node_modules/.unplugin-deno/', 'posix')
+    expect(filter.test('/proj/node_modules/.unplugin-deno/abc/x.js')).toBe(true)
+    expect(filter.test('/proj/node_modules/.unplugin-deno')).toBe(true)
+    expect(filter.test('/proj/node_modules/.unplugin-deno?x')).toBe(true)
+    expect(filter.test('/proj/node_modules/.unplugin-deno-other/x.js')).toBe(false)
+    expect(filter.test('/proj/node_modules/xunplugin-deno/x.js')).toBe(false)
+    expect(filter.test('/other/proj/node_modules/.unplugin-deno/x.js')).toBe(false)
+  })
+
+  it('matches Windows ids with either separator and any case', () => {
+    const filter = pathPrefixFilter('C:\\proj\\node_modules\\.unplugin-deno', 'win32')
+    expect(filter.test('C:\\proj\\node_modules\\.unplugin-deno\\abc\\x.js')).toBe(true)
+    expect(filter.test('c:/PROJ/node_modules/.unplugin-deno/abc/x.js')).toBe(true)
+    expect(filter.test('D:\\proj\\node_modules\\.unplugin-deno\\x.js')).toBe(false)
   })
 })

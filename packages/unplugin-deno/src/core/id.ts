@@ -11,8 +11,17 @@ export type DenoType = 'text' | 'bytes' | 'css'
 /** The query parameter carrying the {@link DenoType} marker. */
 export const DENO_TYPE_PARAM = 'deno-type'
 
+/** Prefix of the plugin's own virtual module ids. */
+export const DENO_VIRTUAL_PREFIX = '\0deno:'
+
 /** Id of the empty module used for `browser: false` package mappings. */
-export const EMPTY_MODULE_ID = '\0deno:empty'
+export const EMPTY_MODULE_ID = `${DENO_VIRTUAL_PREFIX}empty`
+
+/** Host filter matching ids that carry the {@link DenoType} marker. */
+export const DENO_TYPE_ID_FILTER: RegExp = /[?&]deno-type=/
+
+/** Host filter matching the plugin's own virtual ids ({@link DENO_VIRTUAL_PREFIX}). */
+export const DENO_VIRTUAL_ID_FILTER: RegExp = /^\0deno:/
 
 const DENO_TYPES: ReadonlySet<string> = new Set<DenoType>(['text', 'bytes', 'css'])
 
@@ -99,6 +108,42 @@ function parseMarker(id: string): { base: string; value: string } | null {
 /** Whether `id` is a virtual module id (Rollup convention: a `\0` prefix). */
 export function isVirtualId(id: string): boolean {
   return id.startsWith('\0')
+}
+
+/** Whether `id` is one of the plugin's own virtual ids (`\0deno:…`). */
+export function isDenoVirtualId(id: string): boolean {
+  return id.startsWith(DENO_VIRTUAL_PREFIX)
+}
+
+/**
+ * Whether `id` belongs to another plugin and must be left alone (docs/plan.md R7): a `\0` virtual
+ * id that is not ours, or a `virtual:` specifier.
+ */
+export function isForeignId(id: string): boolean {
+  return (isVirtualId(id) && !isDenoVirtualId(id)) || id.startsWith('virtual:')
+}
+
+/**
+ * Whether the plugin handles `id` in `resolveId`: not another plugin's id, and matched by the
+ * `resolveId` filter (owned schemes, import-map keys, markers; docs/architecture.md §5.2).
+ */
+export function isOwnedSpecifier(id: string, filter: RegExp): boolean {
+  if (isForeignId(id)) return false
+  filter.lastIndex = 0
+  return filter.test(id)
+}
+
+/**
+ * A host filter matching ids inside the directory `dir` (and their queries): either separator,
+ * case-insensitive on Windows. Used for the mirror directory in `load` filters.
+ */
+export function pathPrefixFilter(dir: string, flavor: PathFlavor = HOST_PATH_FLAVOR): RegExp {
+  const trimmed = dir.replace(/[\\/]+$/, '')
+  const source = trimmed
+    .split(/[\\/]/)
+    .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('[\\\\/]')
+  return new RegExp(`^${source}(?:[\\\\/]|\\?|$)`, flavor === 'win32' ? 'i' : '')
 }
 
 /**

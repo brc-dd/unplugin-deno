@@ -1,0 +1,9 @@
+{
+  "title": "Other plugins' virtual: and \\0 ids are never intercepted, even with the bare-specifier filter active (nodeModulesDir \"none\")",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup"],
+  "issues": ["denoland/deno-vite-plugin#101"],
+  "expect": {
+    "values": { "answer": 42, "greeting": "hi, with { type: 'text' } stays as it is" }
+  }
+}

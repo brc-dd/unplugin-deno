@@ -82,8 +82,22 @@ function asModule(loaded: Awaited<ReturnType<Engine['load']>>): LoadedModule {
 }
 
 /** A resolved module with machine-specific paths replaced (see test/helpers/normalize.ts). */
+/**
+ * Replaces machine-specific paths in every string field of `module` with placeholders. Strings are
+ * normalized one by one rather than through `JSON.stringify`, because JSON escapes Windows
+ * backslashes (`D:\\a\\…`) and the path variants would no longer match.
+ */
 function portable(module: ResolvedModule, temp: TempProject): unknown {
-  return JSON.parse(normalize(JSON.stringify(module), { paths: [[temp.root, '<root>']] }))
+  const options = { paths: [[temp.root, '<root>']] as const }
+  const walk = (value: unknown): unknown => {
+    if (typeof value === 'string') return normalize(value, options)
+    if (Array.isArray(value)) return value.map(walk)
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, walk(entry)]))
+    }
+    return value
+  }
+  return walk(module)
 }
 
 describe.each(factories)(`$kind engine contract on ${runtime}`, (factory) => {

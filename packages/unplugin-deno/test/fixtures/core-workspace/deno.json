@@ -1,0 +1,6 @@
+{
+  "workspace": ["./packages/*"],
+  "imports": {
+    "root-alias": "./root-alias.ts"
+  }
+}

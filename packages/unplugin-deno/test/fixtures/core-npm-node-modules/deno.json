@@ -1,0 +1,9 @@
+{
+  "nodeModulesDir": "auto",
+  "imports": {
+    "kleur": "npm:kleur@^4",
+    "ms": "npm:ms@2",
+    "lodash-es": "npm:lodash-es@4",
+    "strip-ansi": "npm:strip-ansi@7"
+  }
+}

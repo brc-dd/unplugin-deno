@@ -13,6 +13,7 @@ import {
   loaderWorkspaceOptions,
   parseSourceMap,
   stripInlineSourceMap,
+  toWasmWorkspaceOptions,
 } from './engine.js'
 import { HINTS } from './errors.js'
 import { attachedEngineCount } from './hooks.js'
@@ -139,6 +140,29 @@ describe('loaderWorkspaceOptions', () => {
       preserveJsx: false,
       noTranspile: false,
     })
+  })
+})
+
+describe('toWasmWorkspaceOptions', () => {
+  it('passes newestDependencyDate as an RFC 3339 string, the form the wasm accepts', () => {
+    const date = new Date('2026-01-01T00:00:00Z')
+    expect(toWasmWorkspaceOptions({ platform: 'node', newestDependencyDate: date })).toEqual({
+      platform: 'node',
+      newestDependencyDate: '2026-01-01T00:00:00.000Z',
+    })
+    const without = { platform: 'browser' as const }
+    expect(toWasmWorkspaceOptions(without)).toBe(without)
+  })
+
+  it('lets the loader create a workspace with a minimum dependency age', async () => {
+    const temp = await tempProject('engine-basic')
+    onTestFinished(() => temp.dispose())
+    vi.stubEnv('DENO_DIR', await denoDir())
+    const engine = await createLoaderEngine(
+      options(projectOf(temp), { newestDependencyDate: new Date('2026-01-01T00:00:00Z') }),
+    )
+    onTestFinished(() => engine.dispose())
+    expect(engine.kind).toBe('loader')
   })
 })
 

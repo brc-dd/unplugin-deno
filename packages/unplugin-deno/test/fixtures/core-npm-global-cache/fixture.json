@@ -1,0 +1,17 @@
+{
+  "title": "nodeModulesDir \"none\": npm packages load from DENO_DIR and the imports inside them are resolved by the engine",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown"],
+  "expect": {
+    "values": {
+      "green": "function",
+      "ms": 172800000,
+      "chunked": [
+        [1, 2],
+        [3, 4]
+      ],
+      "stripped": "cake"
+    },
+    "maxBytes": 20000
+  }
+}

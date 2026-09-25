@@ -75,6 +75,16 @@ export function loaderWorkspaceOptions(options: EngineCreateOptions): WorkspaceO
 }
 
 /**
+ * The options as the wasm side deserialises them: `newestDependencyDate` must be an RFC 3339
+ * string (a `Date` fails with "invalid type: JsValue(Date)", although `mod.d.ts` types it `Date`).
+ */
+export function toWasmWorkspaceOptions(options: WorkspaceOptions): WorkspaceOptions {
+  const date = options.newestDependencyDate
+  if (date === undefined) return options
+  return { ...options, newestDependencyDate: date.toISOString() as unknown as Date }
+}
+
+/**
  * Creates a `loader` engine: loads the vendored wasm (once per process), creates the `Workspace`
  * and `Loader`, and attaches the engine to the loader's log and fetch hooks (see `hooks.ts` for
  * the process-wide routing rule).
@@ -97,7 +107,7 @@ export async function createLoaderEngine(options: EngineCreateOptions): Promise<
   let workspace: Workspace | undefined
   let loader: Loader
   try {
-    workspace = new mod.Workspace(loaderWorkspaceOptions(options))
+    workspace = new mod.Workspace(toWasmWorkspaceOptions(loaderWorkspaceOptions(options)))
     loader = await workspace.createLoader()
   } catch (error) {
     try {
