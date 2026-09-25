@@ -1,7 +1,7 @@
 # Prior-art research (snapshot 2026-09-25)
 
 These reports were produced by six parallel research passes before any code was written. They inform
-[`../../PLAN.md`](../../PLAN.md). Facts marked "verified"/"(T)" inside the reports were reproduced locally
+[`../plan.md`](../plan.md). Facts marked "verified"/"(T)" inside the reports were reproduced locally
 with Deno 2.9.7, Node 26, Bun 1.3 and the bundler versions named in each report.
 
 | File | Scope |
