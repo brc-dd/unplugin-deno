@@ -270,7 +270,7 @@ describe('vite build with a vite.config-style setup', () => {
     // Vite names ES module SSR output `.mjs` when no package.json says `"type": "module"`.
     const server = readFileSync(join(outDir, 'server', 'server.mjs'), 'utf8')
     expect(server).toContain('from "npm:kleur@4.1.5"')
-    expect(server).toContain('from "jsr:@std/path@1.1.6"')
+    expect(server).toContain('from "jsr:@std/path@1.1.6/posix"')
     expect(server).toContain('from "node:fs"')
     expect(server).not.toContain('node:module')
     const client = readdirSync(join(outDir, 'client', 'assets'))

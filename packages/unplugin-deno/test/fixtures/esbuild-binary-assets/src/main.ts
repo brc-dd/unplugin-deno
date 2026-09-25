@@ -1,4 +1,4 @@
-import { join } from '@std/path'
+import { join } from '@std/path/posix'
 import logoUrl from '../assets/logo.png'
 import aliasUrl from 'logo'
 import bytes from './data.bin' with { type: 'bytes' }

@@ -13,7 +13,6 @@ import { isOwnedSpecifier, withDenoType } from '../../core/id.js'
 import type { ResolveOutcome, ResolveTarget } from '../../core/resolve.js'
 import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState } from '../../core/state.js'
-import type { PackageInstaller } from './install.js'
 import type { DepsOptimizer } from './optimizer.js'
 import { isPackageFile, registerScannedUrl } from './optimizer.js'
 
@@ -36,7 +35,6 @@ export function esbuildOptimizerPlugin(
   state: PluginState,
   target: ResolveTarget,
   generation: string,
-  install: PackageInstaller,
   optimizer: () => DepsOptimizer | undefined,
 ): EsbuildPlugin {
   const filter = state.resolveIdFilter(true)
@@ -51,7 +49,6 @@ export function esbuildOptimizerPlugin(
           const url = await registerScannedUrl(state, target, optimizer(), args.path, args.importer)
           return url ? { path: args.path, external: true } : undefined
         }
-        await install(args.path, args.importer, target)
         const outcome = await state.resolve(args.path, args.importer, { kind: args.kind, target })
         return esbuildResult(build, args, outcome)
       })

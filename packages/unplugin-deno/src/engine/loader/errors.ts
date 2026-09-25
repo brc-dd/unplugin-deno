@@ -34,12 +34,19 @@ export interface LoaderErrorContext {
   detail?: string | undefined
   /** The module is missing from the Deno cache and downloads are disabled (`cachedOnly`). */
   cachedOnlyMiss?: boolean | undefined
+  /**
+   * The project installs its npm packages itself (`nodeModulesDir: "manual"`): the loader never
+   * downloads one, so an `npm:` requirement it cannot resolve is not installed.
+   */
+  userInstalledNpm?: boolean | undefined
 }
 
 /** Hints shown with each error code (the message says what failed; the hint says what to do). */
 export const HINTS = {
   notFound:
     'Check the import path. For npm packages, run `deno install` (or set `"nodeModulesDir": "auto"` in deno.json).',
+  notInstalled:
+    'The package is not installed in node_modules (`"nodeModulesDir": "manual"`): run `deno install` (or your package manager), or set `"nodeModulesDir": "auto"` in deno.json.',
   optionalDependency:
     'It is an optional dependency of the importing package and is not installed; install it or mark it external.',
   notExported:
@@ -62,6 +69,7 @@ export const HINTS = {
  * | `ResolveError` with `code: 'ERR_MODULE_NOT_FOUND'` | `RESOLVE_NOT_FOUND` ({@link EngineResolveError}, `isOptionalDependency` kept) |
  * | `ResolveError` with `code: 'ERR_PACKAGE_PATH_NOT_EXPORTED'` | `RESOLVE_NOT_EXPORTED` |
  * | `ResolveError` with another code | `RESOLVE_FAILED` |
+ * | `ResolveError` without a code for an `npm:` requirement and `context.userInstalledNpm` | `RESOLVE_NOT_FOUND` (not installed) |
  * | `ResolveError` without a code | by specifier, see {@link classifyUnresolved} |
  * | anything else (load failures, panics) | `RESOLVE_FAILED` |
  */
@@ -108,7 +116,7 @@ export function toDenoPluginError(error: unknown, context: LoaderErrorContext): 
           : undefined) ??
         context.mapped ??
         context.specifier
-      return codelessError(target, message, detail, options)
+      return codelessError(target, message, detail, options, context.userInstalledNpm)
     }
     default:
       return new DenoPluginError('RESOLVE_FAILED', message, {
@@ -138,7 +146,13 @@ export function unresolvedRequirementError(
     })
   }
   const detail = clean(context.detail ?? `the loader could not resolve ${requirement}.`)
-  return codelessError(requirement, `${subject(context)}: ${detail}`, detail, options)
+  return codelessError(
+    requirement,
+    `${subject(context)}: ${detail}`,
+    detail,
+    options,
+    context.userInstalledNpm,
+  )
 }
 
 /**
@@ -166,7 +180,15 @@ function codelessError(
   message: string,
   detail: string,
   options: DenoPluginErrorOptions,
+  userInstalledNpm: boolean | undefined,
 ): DenoPluginError {
+  if (userInstalledNpm === true && parsePackageSpecifier(target)?.scheme === 'npm') {
+    // The loader only looks in node_modules; nothing is downloaded or installed.
+    return new EngineResolveError('RESOLVE_NOT_FOUND', message, {
+      ...options,
+      hint: HINTS.notInstalled,
+    })
+  }
   const code = classifyUnresolved(target)
   switch (code) {
     case 'RESOLVE_UNMAPPED_BARE': {

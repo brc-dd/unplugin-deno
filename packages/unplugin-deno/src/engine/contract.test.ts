@@ -4,6 +4,7 @@
  * their first run and are served from it afterwards.
  */
 import { existsSync } from 'node:fs'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { denoDir } from '../../test/helpers/deno-dir.js'
 import { normalize } from '../../test/helpers/normalize.js'
@@ -448,6 +449,111 @@ describe.each(factories)(`$kind engine contract on ${runtime}`, (factory) => {
         expect(existsSync(kleur.path ?? '')).toBe(true)
       },
     )
+
+    it(
+      'installs npm packages on their first resolution, without entrypoints',
+      { timeout: 120_000 },
+      async () => {
+        await using temp = await tempProject('engine-node-modules-auto')
+        await using engine = await createEngine(factory, projectOf(temp, 'auto'))
+        const main = temp.url('src/main.ts')
+        const expected = temp.manifest.expect as { packageDir: string }
+        // What a Vite dev server does: its entrypoints are HTML files, so nothing seeds the graph.
+        const colors = await engine.resolve('npm:kleur@^4/colors', main, 'import')
+        expect(colors.path).toBe(temp.path(expected.packageDir, 'colors.mjs'))
+        expect(colors.npm).toMatchObject({ name: 'kleur', version: '4.1.5', subpath: '/colors' })
+        // Installed: the synchronous path answers, for the other resolution mode too.
+        expect(engine.resolveSync?.('npm:kleur@^4/colors', main, 'import')?.path).toBe(colors.path)
+        expect((await engine.resolve('kleur', main, 'require')).path).toBe(
+          temp.path(expected.packageDir, 'index.js'),
+        )
+        // A second package (not in the lockfile) installs on its first resolution as well.
+        const esmEnv = await engine.resolve('npm:esm-env@1.2.2/browser', main, 'import')
+        expect(esmEnv.path).toBe(
+          temp.path('node_modules/.deno/esm-env@1.2.2/node_modules/esm-env/true.js'),
+        )
+        expect(existsSync(esmEnv.path ?? '')).toBe(true)
+      },
+    )
+
+    it('does not let a failed or premature resolution stick', { timeout: 120_000 }, async () => {
+      await using temp = await tempProject('engine-node-modules-auto')
+      await using engine = await createEngine(factory, projectOf(temp, 'auto'))
+      const main = temp.url('src/main.ts')
+      const expected = temp.manifest.expect as { packageDir: string }
+      const colors = temp.path(expected.packageDir, 'colors.mjs')
+      // A mapped bare subpath: only the loader knows it names an npm package, so the synchronous
+      // path looks for its files before the package is installed.
+      expect(engine.resolveSync?.('kleur/colors', main, 'import')).toBeUndefined()
+      expect((await engine.resolve('kleur/colors', main, 'import')).path).toBe(colors)
+      expect(engine.resolveSync?.('kleur/colors', main, 'import')?.path).toBe(colors)
+      // A subpath the package does not export fails; other subpaths keep resolving.
+      expectCode(
+        await rejection(engine.resolve('npm:kleur@^4/nope', main, 'import')),
+        'RESOLVE_NOT_EXPORTED',
+      )
+      expect((await engine.resolve('npm:kleur@^4/colors', main, 'import')).path).toBe(colors)
+      // Concurrent first resolutions of one package share its installation.
+      const results = await Promise.all(
+        ['npm:esm-env@1.2.2/browser', 'npm:esm-env@1.2.2', 'npm:esm-env@1.2.2/node'].map(
+          (specifier) => engine.resolve(specifier, main, 'import'),
+        ),
+      )
+      expect(results.map((result) => result.npm?.name)).toEqual(['esm-env', 'esm-env', 'esm-env'])
+    })
+  })
+
+  describe('engine-node-modules-manual', () => {
+    it(
+      'never installs, reports missing packages and resolves them once installed',
+      { timeout: 60_000 },
+      async () => {
+        await using temp = await tempProject('engine-node-modules-manual')
+        await using engine = await createEngine(factory, projectOf(temp, 'manual'))
+        const main = temp.url('src/main.ts')
+        for (const specifier of ['npm:stub-pkg@^1', 'stub-pkg']) {
+          const missing = await rejection(engine.resolve(specifier, main, 'import'))
+          expectCode(missing, 'RESOLVE_NOT_FOUND')
+          expect(missing).toMatchObject({ hint: expect.stringContaining('`deno install`') })
+        }
+        expect(existsSync(temp.path('node_modules'))).toBe(false)
+        // Installed by the user (`deno install`, npm, pnpm, …) while the engine lives.
+        const expected = temp.manifest.expect as { packageDir: string }
+        const packageDir = temp.path(expected.packageDir)
+        await mkdir(packageDir, { recursive: true })
+        await writeFile(
+          temp.path(expected.packageDir, 'package.json'),
+          JSON.stringify({
+            name: 'stub-pkg',
+            version: '1.0.0',
+            type: 'module',
+            exports: './index.js',
+          }),
+        )
+        await writeFile(temp.path(expected.packageDir, 'index.js'), 'export default (s) => s\n')
+        for (const specifier of ['npm:stub-pkg@^1', 'stub-pkg']) {
+          const resolved = await engine.resolve(specifier, main, 'import')
+          expect(resolved).toMatchObject({
+            kind: 'npm',
+            path: temp.path(expected.packageDir, 'index.js'),
+            npm: { name: 'stub-pkg', version: '1.0.0', subpath: '', packageDir },
+          })
+        }
+      },
+    )
+
+    it('reports packages missing from node_modules when adding entrypoints', async () => {
+      await using temp = await tempProject('engine-node-modules-manual')
+      await using engine = await createEngine(factory, projectOf(temp, 'manual'))
+      const diagnostics = await engine.addEntrypoints([temp.url('src/main.ts')])
+      expect(diagnostics.filter((diagnostic) => diagnostic.code !== undefined)).toEqual([
+        {
+          code: 'RESOLVE_NOT_FOUND',
+          message: expect.stringMatching(/^npm:stub-pkg@\^1 is not installed\. .*`deno install`/),
+        },
+      ])
+      expect(existsSync(temp.path('node_modules'))).toBe(false)
+    })
   })
 
   describe('engine-no-config', () => {

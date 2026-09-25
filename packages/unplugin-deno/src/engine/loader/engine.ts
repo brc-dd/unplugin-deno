@@ -22,7 +22,11 @@ import { loadVendoredDenoLoader } from '../../vendored-deno-loader.js'
 import { resolveDenoDir } from '../deno-dir.js'
 import { isMediaType, mediaTypeFromPath, mediaTypeFromUrl } from '../media-type.js'
 import { canonicalize, NpmPackageLocator, realpathMaybeMissing } from '../npm-package.js'
-import { isPackageRequirement, parsePackageSpecifier } from '../package-specifier.js'
+import {
+  isBareSpecifier,
+  isPackageRequirement,
+  parsePackageSpecifier,
+} from '../package-specifier.js'
 import type {
   EncodedSourceMap,
   Engine,
@@ -182,6 +186,16 @@ interface FailureFacts {
   missing?: string | undefined
 }
 
+/** What the asynchronous half of a resolution knows from what came before it. */
+interface AsyncResolveContext {
+  /** The `jsr:`/`npm:` requirement the synchronous half produced, if any. */
+  mapped: string | undefined
+  /** `BlockedDownloads.count` when the resolution started. */
+  blockedBefore: number
+  /** Why the requirement could not be installed, when that was tried first. */
+  detail?: string | undefined
+}
+
 interface LoaderEngineParts {
   mod: VendoredDenoLoader
   workspace: Workspace
@@ -197,6 +211,30 @@ type SyncOutcome =
   | { readonly module: ResolvedModule }
   | { readonly module?: undefined; readonly mapped: string | undefined }
 
+/**
+ * The npm packages of a project (docs/architecture.md §4.4):
+ *
+ * - The loader downloads (`nodeModulesDir: "none"`) or installs (`"auto"`) npm packages while it
+ *   adds modules to its graph, and its first installation covers every package of the lockfile.
+ *   With `"manual"` it never installs: the project's `node_modules` is used as it is.
+ * - The loader's Node.js resolution cache (file types and canonical paths, per wasm instance)
+ *   also records misses and is only emptied when a `Loader` is freed. Looking up a file of a
+ *   package that the lockfile names but that is not installed yet therefore leaves a miss that
+ *   outlives the installation: `resolveSync` before the installation made every later resolution
+ *   of that file fail with `ERR_MODULE_NOT_FOUND`, on every engine of the process.
+ *
+ * So until an engine has installed npm packages once, an `npm:` requirement is added to the graph
+ * before any of its files is looked up (concurrent additions of one requirement are shared, and a
+ * failed one is tried again by the next resolution). Afterwards the synchronous path answers:
+ * lockfile packages are installed, and other requirements fail it before reading any file (the
+ * asynchronous path installs them). A "not found" answer that may come from the cache (a bare
+ * specifier the loader maps to a package it has not installed yet, a package the user installed
+ * meanwhile) is retried once with an empty cache. `jsr:` requirements need none of this: the
+ * synchronous path returns them unchanged, reading no file, until the asynchronous one has added
+ * them to the graph.
+ */
+type NpmInstallation = 'loader' | 'user'
+
 class LoaderEngine implements Engine {
   readonly kind = 'loader'
   readonly #mod: VendoredDenoLoader
@@ -205,6 +243,8 @@ class LoaderEngine implements Engine {
   readonly #hooks: HookRegistration
   readonly #logger: Logger
   readonly #cachedOnly: boolean
+  /** Who installs npm packages; see {@link NpmInstallation}. */
+  readonly #npmInstallation: NpmInstallation
   readonly #root: string
   /** The project root as a directory URL: the referrer when none is given. */
   readonly #rootUrl: string
@@ -218,6 +258,10 @@ class LoaderEngine implements Engine {
    * lockfile or config changes.
    */
   readonly #canonicalNpmPaths = new Map<string, string>()
+  /** Additions of `npm:` requirements in flight (see {@link NpmInstallation}), by requirement. */
+  readonly #installing = new Map<string, Promise<string | undefined>>()
+  /** Whether the loader has installed npm packages for this engine (see {@link NpmInstallation}). */
+  #npmInstalled = false
   #cacheRoots: readonly string[] | undefined
   #disposal: Promise<void> | undefined
 
@@ -228,6 +272,7 @@ class LoaderEngine implements Engine {
     this.#hooks = parts.hooks
     this.#logger = parts.options.logger
     this.#cachedOnly = parts.options.cachedOnly
+    this.#npmInstallation = parts.options.project.nodeModulesDir === 'manual' ? 'user' : 'loader'
     this.#root = resolvePath(parts.options.project.root)
     const rootUrl = toFileUrl(this.#root)
     this.#rootUrl = rootUrl.endsWith('/') ? rootUrl : `${rootUrl}/`
@@ -248,6 +293,9 @@ class LoaderEngine implements Engine {
         const diagnostics: EngineDiagnostic[] = (await this.#addAll(urls)).map((message) => ({
           message: cleanMessage(message),
         }))
+        if (diagnostics.length > 0 && this.#npmInstallation === 'user') {
+          diagnostics.push(...this.#missingPackageDiagnostics())
+        }
         const blocked = this.#blocked.count - blockedBefore
         if (blocked > 0) {
           diagnostics.push({
@@ -271,12 +319,9 @@ class LoaderEngine implements Engine {
   ): ResolvedModule | undefined {
     this.#assertLive('resolve')
     const referrerUrl = this.#referrerUrl(specifier, referrer)
-    const end = this.#hooks.begin()
-    try {
-      return this.#resolveSyncOutcome(specifier, referrer, referrerUrl, mode).module
-    } finally {
-      end()
-    }
+    // Its package may not be installed yet; looking it up now would cache misses.
+    if (this.#requirementToInstall(specifier) !== undefined) return undefined
+    return this.#syncOutcome(specifier, referrer, referrerUrl, mode).module
   }
 
   async resolve(
@@ -286,16 +331,19 @@ class LoaderEngine implements Engine {
   ): Promise<ResolvedModule> {
     this.#assertLive('resolve')
     const referrerUrl = this.#referrerUrl(specifier, referrer)
-    const end = this.#hooks.begin()
-    let outcome: SyncOutcome
-    try {
-      outcome = this.#resolveSyncOutcome(specifier, referrer, referrerUrl, mode)
-    } finally {
-      end()
+    const requirement = this.#requirementToInstall(specifier)
+    if (requirement !== undefined) {
+      return this.#track(() =>
+        this.#resolveAfterInstall(requirement, specifier, referrer, referrerUrl, mode),
+      )
     }
+    const outcome = this.#syncOutcome(specifier, referrer, referrerUrl, mode)
     if (outcome.module !== undefined) return outcome.module
     const { mapped } = outcome
-    return this.#track(() => this.#resolveAsync(specifier, referrer, referrerUrl, mode, mapped))
+    const blockedBefore = this.#blocked.count
+    return this.#track(() =>
+      this.#resolveAsync(specifier, referrer, referrerUrl, mode, { mapped, blockedBefore }),
+    )
   }
 
   async load(url: string, type: LoadType): Promise<LoadedModule | ExternalModule> {
@@ -379,11 +427,27 @@ class LoaderEngine implements Engine {
     return promise
   }
 
+  /** {@link LoaderEngine.#resolveSyncOutcome}, attributing the loader's hooks to this engine. */
+  #syncOutcome(
+    specifier: string,
+    referrer: string | undefined,
+    referrerUrl: string,
+    mode: ResolutionMode,
+  ): SyncOutcome {
+    const end = this.#hooks.begin()
+    try {
+      return this.#resolveSyncOutcome(specifier, referrer, referrerUrl, mode)
+    } finally {
+      end()
+    }
+  }
+
   /**
    * `resolveSync`, falling back (`mapped`) when its result is still a `jsr:`/`npm:` requirement
    * (not in the graph yet), when it throws a `ResolveError` without a code, or when it throws
-   * `ERR_MODULE_NOT_FOUND` for a file of an npm package that is known (lockfile) but not downloaded
-   * or installed yet; the asynchronous `resolve` downloads or installs it.
+   * `ERR_MODULE_NOT_FOUND`: the asynchronous path downloads or installs a package that is known
+   * (lockfile) but not downloaded or installed yet, and tells a cached miss from a missing file
+   * (see {@link NpmInstallation}). A missing optional dependency is reported at once.
    */
   #resolveSyncOutcome(
     specifier: string,
@@ -406,19 +470,96 @@ class LoaderEngine implements Engine {
     return { module: this.#classify(url, specifier) }
   }
 
+  /**
+   * Resolves an `npm:` specifier before the loader has installed npm packages for this engine:
+   * its requirement is added to the graph first (see {@link NpmInstallation}).
+   */
+  async #resolveAfterInstall(
+    requirement: string,
+    specifier: string,
+    referrer: string | undefined,
+    referrerUrl: string,
+    mode: ResolutionMode,
+  ): Promise<ResolvedModule> {
+    const blockedBefore = this.#blocked.count
+    const failure = await this.#install(requirement)
+    if (failure !== undefined) {
+      // The asynchronous path tries once more and reports the failure.
+      return this.#resolveAsync(specifier, referrer, referrerUrl, mode, {
+        mapped: undefined,
+        blockedBefore,
+        detail: failure,
+      })
+    }
+    const outcome = this.#syncOutcome(specifier, referrer, referrerUrl, mode)
+    if (outcome.module !== undefined) return outcome.module
+    return this.#resolveAsync(specifier, referrer, referrerUrl, mode, {
+      mapped: outcome.mapped,
+      blockedBefore,
+    })
+  }
+
+  /**
+   * Adds `requirement` to the graph, which downloads or installs its package (and, the first time,
+   * every package of the lockfile). Additions in flight are shared; a failure is not remembered.
+   * Resolves to why the addition failed, or `undefined`.
+   */
+  #install(requirement: string): Promise<string | undefined> {
+    const pending = this.#installing.get(requirement)
+    if (pending !== undefined) return pending
+    const installing = this.#addRequirement(requirement)
+    this.#installing.set(requirement, installing)
+    const settle = (): void => {
+      if (this.#installing.get(requirement) === installing) this.#installing.delete(requirement)
+    }
+    installing.then(settle, settle)
+    return installing
+  }
+
+  async #addRequirement(requirement: string): Promise<string | undefined> {
+    const end = this.#hooks.begin()
+    let failure: string | undefined
+    try {
+      const [diagnostic] = await this.#loader.addEntrypoints([requirement])
+      failure = diagnostic === undefined ? undefined : cleanMessage(diagnostic.message)
+    } catch (error) {
+      failure = errorMessage(error)
+    } finally {
+      end()
+    }
+    if (failure === undefined) {
+      this.#npmInstalled = true
+      this.#logger.debug(`[engine] Installed ${requirement}`)
+    } else {
+      this.#logger.debug(`[engine] Cannot install ${requirement}: ${failure}`)
+    }
+    return failure
+  }
+
+  /**
+   * The requirement (`npm:name@range`, without subpath) to add to the graph before `specifier` is
+   * looked up, or `undefined` when looking it up is safe (see {@link NpmInstallation}).
+   */
+  #requirementToInstall(specifier: string): string | undefined {
+    if (this.#npmInstalled || this.#npmInstallation === 'user') return undefined
+    const parsed = parsePackageSpecifier(specifier)
+    if (parsed?.scheme !== 'npm') return undefined
+    return `npm:${parsed.name}${parsed.version === undefined ? '' : `@${parsed.version}`}`
+  }
+
   async #resolveAsync(
     specifier: string,
     referrer: string | undefined,
     referrerUrl: string,
     mode: ResolutionMode,
-    mapped: string | undefined,
+    context: AsyncResolveContext,
   ): Promise<ResolvedModule> {
+    const { mapped, blockedBefore } = context
     const end = this.#hooks.begin()
-    const blockedBefore = this.#blocked.count
     try {
       let url: string
       try {
-        url = await this.#loader.resolve(specifier, referrerUrl, this.#resolutionMode(mode))
+        url = await this.#loaderResolve(specifier, referrerUrl, mode)
       } catch (error) {
         const fields = resolveErrorFields(error, this.#mod)
         const code = fields?.code
@@ -431,9 +572,10 @@ class LoaderEngine implements Engine {
           referrer,
           mapped,
           resolveErrorClass: this.#mod.ResolveError,
+          userInstalledNpm: this.#npmInstallation === 'user',
           detail:
             code === undefined && requirement !== undefined
-              ? await this.#rootDiagnostic(requirement)
+              ? (context.detail ?? (await this.#rootDiagnostic(requirement)))
               : undefined,
           cachedOnlyMiss: this.#isCacheMiss(blockedBefore, {
             requirement,
@@ -447,13 +589,65 @@ class LoaderEngine implements Engine {
         throw unresolvedRequirementError(url, {
           specifier,
           referrer,
-          detail: await this.#rootDiagnostic(url),
+          userInstalledNpm: this.#npmInstallation === 'user',
+          detail: context.detail ?? (await this.#rootDiagnostic(url)),
           cachedOnlyMiss: this.#isCacheMiss(blockedBefore, { requirement: url }),
         })
       }
       return this.#classify(url, specifier)
     } finally {
       end()
+    }
+  }
+
+  /**
+   * `loader.resolve`, tried once more with an empty resolution cache when its failure may come
+   * from a cached miss (see {@link NpmInstallation}).
+   */
+  async #loaderResolve(
+    specifier: string,
+    referrerUrl: string,
+    mode: ResolutionMode,
+  ): Promise<string> {
+    const resolutionMode = this.#resolutionMode(mode)
+    try {
+      return await this.#loader.resolve(specifier, referrerUrl, resolutionMode)
+    } catch (error) {
+      if (!this.#mayBeCachedMiss(error) || !(await this.#clearResolutionCache())) throw error
+      this.#logger.debug(`[engine] Resolving ${specifier} again with an empty resolution cache`)
+      return await this.#loader.resolve(specifier, referrerUrl, resolutionMode)
+    }
+  }
+
+  /**
+   * Whether a failure may come from a miss in the loader's resolution cache: a module that was not
+   * found (a missing optional dependency is expected, so it is not retried), or an npm package
+   * missing from a `node_modules` the user installs (`nodeModulesDir: "manual"`).
+   */
+  #mayBeCachedMiss(error: unknown): boolean {
+    const fields = resolveErrorFields(error, this.#mod)
+    if (fields === undefined) return false
+    if (fields.code === 'ERR_MODULE_NOT_FOUND') return !fields.isOptionalDependency
+    return (
+      fields.code === undefined &&
+      this.#npmInstallation === 'user' &&
+      fields.specifier !== undefined &&
+      parsePackageSpecifier(fields.specifier)?.scheme === 'npm'
+    )
+  }
+
+  /**
+   * Empties the loader's Node.js resolution cache, which the wasm empties whenever it frees a
+   * `Loader` (see {@link NpmInstallation}): a throwaway loader of the workspace is created and
+   * freed (well under a millisecond). Returns whether that worked.
+   */
+  async #clearResolutionCache(): Promise<boolean> {
+    try {
+      disposeNative(await this.#workspace.createLoader())
+      return true
+    } catch (error) {
+      this.#logger.debug(`[engine] Cannot empty the resolution cache: ${errorMessage(error)}`)
+      return false
     }
   }
 
@@ -471,14 +665,20 @@ class LoaderEngine implements Engine {
     const requirement =
       facts.requirement === undefined ? undefined : parsePackageSpecifier(facts.requirement)
     if (requirement?.scheme === 'jsr') return this.#blocked.hasJsrPackage(requirement.name)
-    return requirement?.scheme === 'npm' && facts.code === undefined
+    // Projects that install their own npm packages download none.
+    return (
+      requirement?.scheme === 'npm' &&
+      facts.code === undefined &&
+      this.#npmInstallation === 'loader'
+    )
   }
 
   #needsAsyncResolve(error: unknown): boolean {
     const fields = resolveErrorFields(error, this.#mod)
     if (fields === undefined) return false
     if (fields.code === undefined) return true
-    return fields.code === 'ERR_MODULE_NOT_FOUND' && this.#isUninstalledNpmFile(fields.specifier)
+    if (fields.code !== 'ERR_MODULE_NOT_FOUND') return false
+    return !fields.isOptionalDependency || this.#isUninstalledNpmFile(fields.specifier)
   }
 
   /**
@@ -497,13 +697,64 @@ class LoaderEngine implements Engine {
     return managed && !existsSync(path)
   }
 
-  /** The graph diagnostic explaining why `requirement` (a failed root) did not resolve. */
+  /**
+   * The graph diagnostic explaining why `requirement` (a failed root) did not resolve. An npm
+   * package missing from a `node_modules` the user installs has none (the loader refuses such a
+   * root), and the resolution error explains it.
+   */
   async #rootDiagnostic(requirement: string): Promise<string | undefined> {
+    if (this.#npmInstallation === 'user' && parsePackageSpecifier(requirement)?.scheme === 'npm') {
+      return undefined
+    }
     try {
       const [first] = await this.#loader.addEntrypoints([requirement])
       return first?.message
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * With `nodeModulesDir: "manual"`, one diagnostic with a code and a hint per npm package the
+   * graph imports but `node_modules` lacks (the loader's diagnostics for them have no code, like
+   * those for imports the host resolves, so hosts only log them as debug output). The graph keeps
+   * the error of a failed import without the requirement it maps to, so each failed `npm:` or bare
+   * import is resolved again from the project root.
+   */
+  #missingPackageDiagnostics(): EngineDiagnostic[] {
+    let graph: unknown
+    try {
+      graph = this.#loader.getGraphUnstable()
+    } catch {
+      return []
+    }
+    const missing = new Set<string>()
+    for (const specifier of failedImports(graph)) {
+      const requirement = parsePackageSpecifier(this.#npmRequirementOf(specifier) ?? '')
+      if (requirement?.scheme !== 'npm') continue
+      const version = requirement.version === undefined ? '' : `@${requirement.version}`
+      missing.add(`npm:${requirement.name}${version}`)
+    }
+    return [...missing].map((requirement) => ({
+      code: 'RESOLVE_NOT_FOUND',
+      message: `${requirement} is not installed. ${HINTS.notInstalled}`,
+    }))
+  }
+
+  /**
+   * The `npm:` requirement an `npm:` or bare `specifier` resolves to when the loader cannot find
+   * its package (a `ResolveError` without a code that names the requirement), else `undefined`.
+   */
+  #npmRequirementOf(specifier: string): string | undefined {
+    if (!isBareSpecifier(specifier) && parsePackageSpecifier(specifier)?.scheme !== 'npm') {
+      return undefined
+    }
+    try {
+      this.#loader.resolveSync(specifier, this.#rootUrl, this.#mod.ResolutionMode.Import)
+      return undefined
+    } catch (error) {
+      const fields = resolveErrorFields(error, this.#mod)
+      return fields?.code === undefined ? fields?.specifier : undefined
     }
   }
 
@@ -712,15 +963,46 @@ function isFile(path: string): boolean {
   }
 }
 
-/** The `code`/`specifier` of a vendored `ResolveError`, or `undefined` for other errors. */
+/**
+ * The specifiers of the imports the loader's serialized graph (`getGraphUnstable()`, deno_graph's
+ * JSON: `modules[].dependencies[].code.error`) failed to resolve; unexpected shapes yield none.
+ */
+function failedImports(graph: unknown): Set<string> {
+  const failed = new Set<string>()
+  const modules = isRecord(graph) && Array.isArray(graph.modules) ? graph.modules : []
+  for (const module of modules) {
+    const dependencies = isRecord(module) ? module.dependencies : undefined
+    if (!Array.isArray(dependencies)) continue
+    for (const dependency of dependencies) {
+      if (!isRecord(dependency) || typeof dependency.specifier !== 'string') continue
+      const code = dependency.code
+      if (isRecord(code) && typeof code.error === 'string') failed.add(dependency.specifier)
+    }
+  }
+  return failed
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+/** The fields of a vendored `ResolveError` (see {@link resolveErrorFields}). */
+interface ResolveErrorFields {
+  code: string | undefined
+  specifier: string | undefined
+  isOptionalDependency: boolean
+}
+
+/** The fields of a vendored `ResolveError`, or `undefined` for other errors. */
 function resolveErrorFields(
   error: unknown,
   mod: VendoredDenoLoader,
-): { code: string | undefined; specifier: string | undefined } | undefined {
+): ResolveErrorFields | undefined {
   if (!(error instanceof mod.ResolveError)) return undefined
   return {
     code: typeof error.code === 'string' ? error.code : undefined,
     specifier: typeof error.specifier === 'string' ? error.specifier : undefined,
+    isOptionalDependency: error.isOptionalDependency === true,
   }
 }
 

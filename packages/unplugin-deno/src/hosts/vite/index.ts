@@ -51,7 +51,6 @@ import {
   VITE_MARKER_ID_FILTER,
   viteMarkerIdFor,
 } from './marker.js'
-import { packageInstaller } from './install.js'
 import type { DepsOptimizer } from './optimizer.js'
 import { optimizedDependency, optimizerPlugin, packageKind } from './optimizer.js'
 import { esbuildOptimizerPlugin } from './optimizer-esbuild.js'
@@ -70,7 +69,6 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
   const loadFilter = { id: [...state.loadFilter(), VITE_MARKER_ID_FILTER] }
   /** Whether Vite's optimizer bundles with Rolldown (Vite 8) rather than esbuild (Vite 7). */
   let rolldownOptimizer = true
-  const install = packageInstaller(state)
   /** The dev server's environments by name (for the optimizer plugin). */
   const environments = new Map<string, Environment>()
   return {
@@ -128,14 +126,12 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
         result.optimizeDeps = rolldownOptimizer
           ? {
               rolldownOptions: {
-                plugins: [optimizerPlugin(state, target, state.generation, install, optimizer)],
+                plugins: [optimizerPlugin(state, target, state.generation, optimizer)],
               },
             }
           : {
               esbuildOptions: {
-                plugins: [
-                  esbuildOptimizerPlugin(state, target, state.generation, install, optimizer),
-                ],
+                plugins: [esbuildOptimizerPlugin(state, target, state.generation, optimizer)],
               },
             }
       }
@@ -204,7 +200,6 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
         const environment: Environment | undefined = this.environment
         const scan = (options as { scan?: boolean }).scan === true
         const target = environment === undefined ? undefined : targetOf(state, environment)
-        await install(source, importer, target)
         const outcome = await state.resolve(source, importer, {
           kind: options.kind,
           isEntry: options.isEntry,

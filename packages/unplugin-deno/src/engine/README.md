@@ -8,10 +8,13 @@ Deno's resolution and loading behind one interface
   `MediaType`, …
 - `create.ts`: `createEngine(kind, options)`; `deno-cli/engine.ts` is the M2 stub
   (`ENGINE_UNAVAILABLE`).
+- `errors.ts`: `EngineResolveError`, a `DenoPluginError` that says whether a missing module is an
+  optional dependency of the importing npm package.
 - `loader/engine.ts`: the `loader` engine over the vendored `@deno/loader`, reached only through
   [`../vendored-deno-loader.ts`](../vendored-deno-loader.ts) (which must stay at depth 1 in `src/`).
-  `loader/errors.ts` maps loader errors to `DenoPluginError` codes; `loader/hooks.ts` routes the
-  loader's process-global log and fetch hooks to the live engines (and enforces `cachedOnly`).
+  It installs or downloads npm packages as they are resolved (§4.4). `loader/errors.ts` maps
+  loader errors to `DenoPluginError` codes; `loader/hooks.ts` routes the loader's process-global
+  log and fetch hooks to the live engines (and enforces `cachedOnly`).
 - `media-type.ts`, `deno-dir.ts`, `npm-package.ts`, `package-specifier.ts`: media types, the
   `DENO_DIR` location, npm package lookup for resolved files, and `jsr:`/`npm:`/bare specifier
   parsing.

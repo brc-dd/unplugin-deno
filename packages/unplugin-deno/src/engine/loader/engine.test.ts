@@ -353,6 +353,101 @@ describe('npm registry failures', () => {
   })
 })
 
+describe('npm installation', () => {
+  it(
+    'adds a requirement to the graph once for concurrent first resolutions',
+    { timeout: 120_000 },
+    async () => {
+      vi.stubEnv('DENO_DIR', await denoDir())
+      await using temp = await tempProject('engine-node-modules-auto')
+      const logger = recordingLogger()
+      await using engine = await createLoaderEngine(options(projectOf(temp, 'auto'), { logger }))
+      const main = temp.url('src/main.ts')
+      // Not installed yet: the synchronous path does not look (it would cache misses).
+      expect(engine.resolveSync?.('npm:kleur@^4/colors', main, 'import')).toBeUndefined()
+      const resolved = await Promise.all([
+        engine.resolve('npm:kleur@^4/colors', main, 'import'),
+        engine.resolve('npm:kleur@^4', main, 'import'),
+        engine.resolve('npm:kleur@^4/colors', main, 'require'),
+      ])
+      const packageDir = 'node_modules/.deno/kleur@4.1.5/node_modules/kleur'
+      expect(resolved.map((module) => module.path)).toEqual([
+        temp.path(packageDir, 'colors.mjs'),
+        temp.path(packageDir, 'index.mjs'),
+        temp.path(packageDir, 'colors.js'),
+      ])
+      expect(logger.lines.filter((line) => line.startsWith('debug [engine] Installed '))).toEqual([
+        'debug [engine] Installed npm:kleur@^4',
+      ])
+      expect(logger.lines).toContain('debug [engine] Initialize kleur@4.1.5')
+    },
+  )
+
+  it('tries a failed installation again on the next resolution', async () => {
+    const cache = await freshDenoDir()
+    onTestFinished(() => cache.dispose())
+    vi.stubEnv('DENO_DIR', cache.path)
+    await using temp = await tempProject('engine-no-config')
+    const packument = {
+      name: 'kleur',
+      'dist-tags': { latest: '4.1.5' },
+      versions: {
+        '4.1.5': {
+          name: 'kleur',
+          version: '4.1.5',
+          dist: { tarball: 'https://registry.npmjs.org/kleur/-/kleur-4.1.5.tgz' },
+        },
+      },
+    }
+    const registry = servingFetch({
+      'https://registry.npmjs.org/kleur': ['application/json', JSON.stringify(packument)],
+    })
+    const logger = recordingLogger()
+    await using engine = await createLoaderEngine(
+      options(projectOf(temp), { fetch: registry, logger }),
+    )
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await rejection(() => engine.resolve('npm:kleur@^99', undefined, 'import'))
+      expectCode(error, 'RESOLVE_CONSTRAINT')
+    }
+    const failures = logger.lines.filter((line) =>
+      line.startsWith('debug [engine] Cannot install npm:kleur@^99: '),
+    )
+    expect(failures).toHaveLength(2)
+  })
+
+  it('retries a "not found" answer once with an empty resolution cache', async () => {
+    vi.stubEnv('DENO_DIR', await denoDir())
+    await using temp = await tempProject('engine-node-modules-manual')
+    const logger = recordingLogger()
+    await using engine = await createLoaderEngine(options(projectOf(temp, 'manual'), { logger }))
+    const main = temp.url('src/main.ts')
+    const missing = await rejection(() => engine.resolve('npm:stub-pkg@^1', main, 'import'))
+    expectCode(missing, 'RESOLVE_NOT_FOUND')
+    expect(missing).toMatchObject({ hint: HINTS.notInstalled })
+    // The loader's resolution cache now holds the misses; the user installs the package.
+    await mkdir(temp.path('node_modules/stub-pkg'), { recursive: true })
+    await writeFile(
+      temp.path('node_modules/stub-pkg/package.json'),
+      JSON.stringify({ name: 'stub-pkg', version: '1.0.0', exports: './index.js' }),
+    )
+    await writeFile(temp.path('node_modules/stub-pkg/index.js'), 'export default 1\n')
+    expect((await engine.resolve('npm:stub-pkg@^1', main, 'import')).path).toBe(
+      temp.path('node_modules/stub-pkg/index.js'),
+    )
+    const retry = 'debug [engine] Resolving npm:stub-pkg@^1 again with an empty resolution cache'
+    expect(logger.lines.filter((line) => line === retry)).toHaveLength(2)
+    // Such a project downloads no npm package, so `cachedOnly` does not explain a missing one.
+    await using cachedOnly = await createLoaderEngine(
+      options(projectOf(temp, 'manual'), { cachedOnly: true }),
+    )
+    expectCode(
+      await rejection(() => cachedOnly.resolve('npm:not-installed@1', main, 'import')),
+      'RESOLVE_NOT_FOUND',
+    )
+  })
+})
+
 describe('redirects', () => {
   it('are followed by load, and by resolve once the module is in the graph', async () => {
     const cache = await freshDenoDir()

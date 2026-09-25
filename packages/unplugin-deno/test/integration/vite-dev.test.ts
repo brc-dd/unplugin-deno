@@ -105,12 +105,14 @@ function viteDevSuite(major: 7 | 8): void {
       const codes = await dev.crawl('/src/main.ts')
       const deps = optimized(dev)
       expect(Object.keys(deps).toSorted()).toEqual([
-        '@std/path',
+        '@std/path/posix',
         'data:text/javascript,export default 42',
         'https://deno.land/std@0.224.0/text/closest_string.ts',
         'npm:kleur@^4/colors',
       ])
-      expect(slash(deps['@std/path'] ?? '')).toMatch(/\/\.unplugin-deno\/\w+\/https\/jsr\.io\//)
+      expect(slash(deps['@std/path/posix'] ?? '')).toMatch(
+        /\/\.unplugin-deno\/\w+\/https\/jsr\.io\//,
+      )
       expect(slash(deps['npm:kleur@^4/colors'] ?? '')).toMatch(
         /\/node_modules\/\.deno\/kleur@4\.1\.5\//,
       )
@@ -169,12 +171,12 @@ function viteDevSuite(major: 7 | 8): void {
       const urls = importUrls(codes.get('/src/main.ts') ?? '')
       const mirror = urls.find((url) => url.includes('/.unplugin-deno/'))
       expect(mirror).toMatch(
-        /^\/node_modules\/\.unplugin-deno\/\w+\/https\/jsr\.io\/@std\/path\/1\.1\.6\/mod\.ts\.js$/,
+        /^\/node_modules\/\.unplugin-deno\/\w+\/https\/jsr\.io\/@std\/path\/1\.1\.6\/posix\/mod\.ts\.js$/,
       )
       expect(Object.keys(optimized(dev))).not.toContain('@std/path')
       // The mirror's relative imports resolve natively; the loaded code has no linked source map.
       const joinCode =
-        [...codes].find(([url]) => url.includes('/@std/path/1.1.6/join.ts.js'))?.[1] ?? ''
+        [...codes].find(([url]) => url.includes('/@std/path/1.1.6/posix/join.ts.js'))?.[1] ?? ''
       expect(joinCode).toContain('function join(')
       expect(joinCode).not.toContain('sourceMappingURL=join.ts.js.map')
     })

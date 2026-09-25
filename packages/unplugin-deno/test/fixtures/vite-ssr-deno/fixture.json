@@ -4,7 +4,7 @@
   "hosts": ["vite"],
   "issues": ["denoland/deno-vite-plugin#56", "vitejs/vite#20828", "vitejs/vite#20850"],
   "expect": {
-    "externals": ["jsr:@std/path@1.1.6", "node:fs", "npm:kleur@4.1.5"],
+    "externals": ["jsr:@std/path@1.1.6/posix", "node:fs", "npm:kleur@4.1.5"],
     "values": {
       "joined": "a/b",
       "answer": 42,

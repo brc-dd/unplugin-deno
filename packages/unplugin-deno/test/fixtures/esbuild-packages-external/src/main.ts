@@ -1,6 +1,6 @@
 import kleur from 'kleur'
 import { green } from 'npm:kleur@^4/colors'
-import { join } from '@std/path'
+import { join } from '@std/path/posix'
 import { basename } from 'jsr:@std/path@^1/basename'
 import { closestString } from 'https://deno.land/std@0.224.0/text/closest_string.ts'
 import { local } from '@app/local'

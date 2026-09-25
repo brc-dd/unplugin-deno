@@ -327,9 +327,12 @@ describe('the esbuild plugin', () => {
     onTestFinished(() => ctx.dispose())
     // One error from onStart; the owned imports do not add one each.
     const failure = await buildFailure(ctx.rebuild())
-    expect(failure.errors.map((error) => error.detail as unknown)).toEqual([
-      expect.objectContaining({ code: 'CONFIG_INVALID' }),
-    ])
+    expect(
+      failure.errors.map((error) => ({
+        text: error.text,
+        code: (error.detail as { code?: string } | undefined)?.code,
+      })),
+    ).toEqual([expect.objectContaining({ code: 'CONFIG_INVALID' })])
     // The filters registered without a project are broad, so the fixed config works in place.
     await writeFile(config, original)
     const fixed = await ctx.rebuild()
@@ -1010,8 +1013,12 @@ describe('plugin instances shared by builds', () => {
     const same = await esbuildBuild(await options('browser'))
     expect(same.errors).toEqual([])
     const other = await buildFailure(esbuildBuild(await options('node')))
-    expect(other.errors).toHaveLength(1)
-    expect(other.errors[0]?.detail).toMatchObject({ code: 'OPTIONS_INVALID' })
+    expect(
+      other.errors.map((error) => ({
+        text: error.text,
+        code: (error.detail as { code?: string } | undefined)?.code,
+      })),
+    ).toEqual([expect.objectContaining({ code: 'OPTIONS_INVALID' })])
     blocked.fire()
     expect((await first).errors).toEqual([])
   })

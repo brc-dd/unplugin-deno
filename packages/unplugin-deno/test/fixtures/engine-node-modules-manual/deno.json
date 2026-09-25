@@ -1,0 +1,6 @@
+{
+  "nodeModulesDir": "manual",
+  "imports": {
+    "stub-pkg": "npm:stub-pkg@^1"
+  }
+}

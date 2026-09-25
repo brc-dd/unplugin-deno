@@ -73,6 +73,9 @@ export async function esbuildOptions(
     absWorkingDir: fixtureDir,
     bundle: true,
     format: 'esm',
+    // The tests evaluate the output in the current runtime; esbuild's default `esnext` target lets
+    // its `bytes` loader emit `Uint8Array.fromBase64`, which Node 22 does not have yet.
+    target: 'node22',
     entryNames: '[name]',
     chunkNames: 'chunk-[hash]',
     sourcemap: true,

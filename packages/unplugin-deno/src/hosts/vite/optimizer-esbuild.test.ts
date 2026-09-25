@@ -4,7 +4,6 @@ import { denoDir } from '../../../test/helpers/deno-dir.js'
 import { tempProject } from '../../../test/helpers/temp-project.js'
 import { PluginState } from '../../core/state.js'
 import type { DepsOptimizer } from './optimizer.js'
-import { packageInstaller } from './install.js'
 import { esbuildOptimizerPlugin } from './optimizer-esbuild.js'
 
 type OnResolve = (args: OnResolveArgs) => Promise<OnResolveResult | undefined>
@@ -74,13 +73,7 @@ describe('esbuildOptimizerPlugin (Vite 7)', () => {
       },
     } as unknown as DepsOptimizer
     const target = { platform: 'browser' as const, conditions: [] }
-    const plugin = esbuildOptimizerPlugin(
-      state,
-      target,
-      'abcd1234',
-      async () => {},
-      () => optimizer,
-    )
+    const plugin = esbuildOptimizerPlugin(state, target, 'abcd1234', () => optimizer)
     expect(plugin.name).toBe('unplugin-deno:optimizer:abcd1234')
     const { onResolve, onLoad, resolveCalls } = setupPlugin(plugin, { path: '/pkg/index.js' })
     const app = project.path('src/server.ts')
@@ -123,11 +116,11 @@ describe('esbuildOptimizerPlugin (Vite 7)', () => {
     const state = new PluginState({ cwd: project.root, platform: 'browser' }, 'vite')
     onTestFinished(() => state.close())
     await state.prepare()
+    // The engine installs the package (nodeModulesDir "auto") on its first resolution.
     const plugin = esbuildOptimizerPlugin(
       state,
       { platform: 'browser' },
       'abcd1234',
-      packageInstaller(state),
       () => undefined,
     )
     const resolvedPath = project.path(

@@ -1,0 +1,7 @@
+{
+  "name": "engine-node-modules-manual",
+  "private": true,
+  "dependencies": {
+    "stub-pkg": "^1.0.0"
+  }
+}

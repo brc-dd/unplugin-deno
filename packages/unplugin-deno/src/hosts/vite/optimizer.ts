@@ -21,7 +21,6 @@ import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState } from '../../core/state.js'
 import type { HostResolve, RollupFamilyResolveResult } from '../shared.js'
 import { toRollupResult } from '../shared.js'
-import type { PackageInstaller } from './install.js'
 
 /** A dev environment's optimizer (`DevEnvironment.depsOptimizer`). */
 export type DepsOptimizer = NonNullable<DevEnvironment['depsOptimizer']>
@@ -198,7 +197,6 @@ export function optimizerPlugin(
   state: PluginState,
   target: ResolveTarget,
   generation: string,
-  install: PackageInstaller,
   optimizer: () => DepsOptimizer | undefined,
 ): Rolldown.Plugin {
   return {
@@ -210,7 +208,6 @@ export function optimizerPlugin(
           const url = await registerScannedUrl(state, target, optimizer(), source, importer)
           return url ? { id: source, external: true } : null
         }
-        await install(source, importer, target)
         const outcome = await state.resolve(source, importer, {
           kind: extra.kind,
           isEntry: extra.isEntry,

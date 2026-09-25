@@ -231,13 +231,7 @@ describe('package files and URL registration', () => {
     const state = new PluginState({ cwd: project.root, platform: 'browser' }, 'vite')
     onTestFinished(() => state.close())
     await state.prepare()
-    const plugin = optimizerPlugin(
-      state,
-      { platform: 'browser' },
-      'abcd1234',
-      async () => {},
-      () => undefined,
-    )
+    const plugin = optimizerPlugin(state, { platform: 'browser' }, 'abcd1234', () => undefined)
     expect(plugin.name).toBe('unplugin-deno:optimizer:abcd1234')
     const hook = plugin.resolveId
     const handler =

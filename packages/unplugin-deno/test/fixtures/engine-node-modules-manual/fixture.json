@@ -1,0 +1,8 @@
+{
+  "title": "Engine contract: nodeModulesDir \"manual\" (bring your own node_modules) never installs; a missing package is RESOLVE_NOT_FOUND until it is installed",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "packageDir": "node_modules/stub-pkg"
+  }
+}
