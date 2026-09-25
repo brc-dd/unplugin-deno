@@ -1,0 +1,153 @@
+{
+  "name": "unplugin-deno",
+  "version": "0.0.0",
+  "description": "Deno module resolution (jsr:, npm:, https:, import maps, workspaces) for Vite, Rolldown, Rollup, esbuild, webpack, Rspack, Bun and Farm",
+  "keywords": [
+    "bun",
+    "deno",
+    "esbuild",
+    "jsr",
+    "rolldown",
+    "rollup",
+    "rspack",
+    "unplugin",
+    "vite",
+    "webpack"
+  ],
+  "homepage": "https://github.com/brc-dd/unplugin-deno#readme",
+  "bugs": "https://github.com/brc-dd/unplugin-deno/issues",
+  "license": "MIT",
+  "author": "Divyansh Singh",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brc-dd/unplugin-deno.git",
+    "directory": "packages/unplugin-deno"
+  },
+  "files": [
+    "dist",
+    "vendor"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "default": "./dist/vite.js"
+    },
+    "./rolldown": {
+      "types": "./dist/rolldown.d.ts",
+      "default": "./dist/rolldown.js"
+    },
+    "./rollup": {
+      "types": "./dist/rollup.d.ts",
+      "default": "./dist/rollup.js"
+    },
+    "./esbuild": {
+      "types": "./dist/esbuild.d.ts",
+      "default": "./dist/esbuild.js"
+    },
+    "./webpack": {
+      "types": "./dist/webpack.d.ts",
+      "default": "./dist/webpack.js"
+    },
+    "./rspack": {
+      "types": "./dist/rspack.d.ts",
+      "default": "./dist/rspack.js"
+    },
+    "./rsbuild": {
+      "types": "./dist/rsbuild.d.ts",
+      "default": "./dist/rsbuild.js"
+    },
+    "./bun": {
+      "types": "./dist/bun.d.ts",
+      "default": "./dist/bun.js"
+    },
+    "./farm": {
+      "types": "./dist/farm.d.ts",
+      "default": "./dist/farm.js"
+    },
+    "./register": {
+      "types": "./dist/register.d.ts",
+      "default": "./dist/register.js"
+    },
+    "./api": {
+      "types": "./dist/api.d.ts",
+      "default": "./dist/api.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "test": "vitest run",
+    "test:deno": "deno run -A npm:vitest run",
+    "test:bun": "bun --bun x vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "vendor:loader": "node scripts/vendor-loader.ts",
+    "jsr:dry-run": "deno publish --dry-run --allow-dirty",
+    "publint": "publint",
+    "attw": "attw --pack --profile esm-only"
+  },
+  "dependencies": {
+    "@jridgewell/remapping": "^2.3.5",
+    "es-module-lexer": "^3.0.2",
+    "jsonc-parser": "^3.3.1",
+    "magic-string": "^1.4.2",
+    "tinyglobby": "^0.2.17",
+    "unplugin": "^3.4.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "publint": "^0.3.24",
+    "rolldown": "^1.2.11",
+    "rollup": "^4.63.5",
+    "tsdown": "^0.23.0",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2"
+  },
+  "peerDependencies": {
+    "@farmfe/core": "^1.7.0",
+    "@rsbuild/core": "^2.0.0",
+    "@rspack/core": "^2.0.0",
+    "esbuild": ">=0.25.0",
+    "rolldown": "^1.0.0",
+    "rollup": "^4.40.0",
+    "vite": "^7.0.0 || ^8.0.0",
+    "webpack": "^5.108.0"
+  },
+  "peerDependenciesMeta": {
+    "@farmfe/core": {
+      "optional": true
+    },
+    "@rsbuild/core": {
+      "optional": true
+    },
+    "@rspack/core": {
+      "optional": true
+    },
+    "esbuild": {
+      "optional": true
+    },
+    "rolldown": {
+      "optional": true
+    },
+    "rollup": {
+      "optional": true
+    },
+    "vite": {
+      "optional": true
+    },
+    "webpack": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=22.12"
+  }
+}

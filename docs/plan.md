@@ -315,7 +315,7 @@ export default defineConfig({
     checks?: { browserSafety?: boolean; duplicates?: boolean; lockfile?: boolean } | boolean,
     debug?: boolean,
     // escape hatches
-    include?/exclude?: FilterPattern,      // limit which importers we act on
+    importers?: { include?: FilterPattern; exclude?: FilterPattern }, // limit which importers we act on
     resolve?: (spec, importer, ctx) => ...,// user override hook
   })],
 })

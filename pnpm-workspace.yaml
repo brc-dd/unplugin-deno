@@ -1,0 +1,16 @@
+packages:
+  - packages/*
+  - examples/*
+  - bench
+
+# pnpm >= 11 reads project settings from this file only (.npmrc is used for registries and auth).
+# Optional peers (webpack, Rspack, Farm, ...) are installed explicitly as devDependencies when a
+# test needs them, not automatically.
+autoInstallPeers: false
+shellEmulator: true
+allowBuilds:
+  esbuild: false
+minimumReleaseAgeExclude:
+  - '@vitest/mocker@5.0.2'
+  - '@vitest/spy@5.0.2'
+  - vitest@5.0.2

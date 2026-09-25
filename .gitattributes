@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+*.wasm binary
+*.tgz binary
+*.png binary
+*.jpg binary
+*.ico binary
+
+*.snap text eol=lf
+**/__snapshots__/** text eol=lf

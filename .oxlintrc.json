@@ -1,0 +1,43 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "node", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "env": {
+    "builtin": true,
+    "es2024": true,
+    "node": true
+  },
+  "options": {
+    "reportUnusedDisableDirectives": "error"
+  },
+  "ignorePatterns": ["**/vendor/**", "**/dist/**", "**/test/fixtures/**"],
+  "rules": {
+    "eqeqeq": ["error", "always"],
+    "no-console": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "typescript/no-explicit-any": "error",
+    "import/no-default-export": "error",
+    "unicorn/prefer-node-protocol": "error"
+  },
+  "overrides": [
+    {
+      "files": [
+        "packages/unplugin-deno/src/{vite,rolldown,rollup,esbuild,webpack,rspack,rsbuild,bun,farm}.ts",
+        "**/*.config.ts"
+      ],
+      "rules": {
+        "import/no-default-export": "off"
+      }
+    },
+    {
+      "files": ["packages/unplugin-deno/src/diagnostics/logger.ts", "**/scripts/**"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
+}

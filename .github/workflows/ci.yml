@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  lint:
+    name: Lint, format, typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm fmt:check
+      - run: pnpm typecheck
+
+  test:
+    name: Test (${{ matrix.os }}, ${{ matrix.runtime }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        runtime: [node-22, node-26, deno, bun]
+    env:
+      TEST_SCRIPT: ${{ matrix.runtime == 'deno' && 'test:deno' || matrix.runtime == 'bun' && 'test:bun' || 'test' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.runtime == 'node-22' && 22 || 26 }}
+      - if: matrix.runtime == 'deno'
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - if: matrix.runtime == 'bun'
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: pnpm install --frozen-lockfile
+      # Remote fixtures download into this DENO_DIR once; test/helpers/deno-dir.ts reads the variable.
+      - name: Cache the test DENO_DIR
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/unplugin-deno-deno-dir
+          key: deno-dir-${{ runner.os }}-${{ hashFiles('packages/unplugin-deno/test/fixtures/**/deno.lock') }}
+          restore-keys: deno-dir-${{ runner.os }}-
+      - run: pnpm ${{ env.TEST_SCRIPT }}
+        env:
+          UNPLUGIN_DENO_TEST_DENO_DIR: ${{ runner.temp }}/unplugin-deno-deno-dir
+
+  build:
+    name: Build and package checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm -F unplugin-deno publint
+      - run: pnpm -F unplugin-deno attw
+      # Known to fail until type-only declaration chunks are resolvable by Deno (docs/contributing.md#release).
+      - name: JSR dry run
+        continue-on-error: true
+        run: pnpm jsr:dry-run

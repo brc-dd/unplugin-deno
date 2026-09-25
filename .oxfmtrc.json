@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "useTabs": false,
+  "semi": false,
+  "singleQuote": true,
+  "trailingComma": "all",
+  "endOfLine": "lf",
+  "ignorePatterns": [
+    "docs/**",
+    "**/vendor/**",
+    "**/dist/**",
+    "pnpm-lock.yaml",
+    "**/deno.lock",
+    "**/CHANGELOG.md"
+  ]
+}

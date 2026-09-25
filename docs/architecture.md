@@ -40,8 +40,9 @@ src/
 │  ├─ media-type.ts         MediaType ↔ extension ↔ host moduleType / esbuild loader
 │  ├─ loader/               `loader` engine over the vendored @deno/loader (§4.2)
 │  │  ├─ engine.ts
-│  │  ├─ vendored.ts        lazy import of ../../vendor/deno-loader, logger/fetch injection
 │  │  └─ errors.ts          ResolveError → DenoPluginError mapping
+├─ vendored-deno-loader.ts  lazy import of ../vendor/deno-loader (must stay at depth 1 so the relative path is the
+│                           same from src/ and dist/; tsdown keeps the import external), logger/fetch injection
 │  └─ deno-cli/             `deno` engine (M2): deno info --json graph, localPath, DENO_DIR files
 ├─ hosts/
 │  ├─ vite/                 config/configEnvironment/configResolved/configureServer hooks, depsOptimizer wiring, HMR
@@ -210,7 +211,7 @@ Facts that drive the implementation (verified; see research/feasibility.md §7 a
 - Logging: the glue calls `console.error('Downloading', url)` and prints Rust log lines. The vendored `helpers.js` is
   patched so these go to an injectable logger (`vendored.ts` sets it per process). `fetch` is read from
   `globalThis.fetch` at call time; the vendored glue is patched to use an injectable fetch (for proxies/auth/tests) with
-  retry (3 attempts, jittered) since upstream has none. `cachedOnly` only blocks remote-module fetches.
+  3 jittered retries (4 attempts) on network errors, 429 and 5xx, since upstream has none. `cachedOnly` only blocks remote-module fetches.
 - Wasm loading: use the Node code path (`readFileSync` + synchronous `WebAssembly.Module/Instance`) on Node, Deno and
   Bun alike (verified). Cold cost ≈ 85 ms, warm ≈ 15 ms; `Workspace + createLoader` ≈ 25 ms; recreate on config
   change is cheap. The wasm is read from `new URL('./rs_lib.wasm', import.meta.url)`, so the vendor directory must be
@@ -256,6 +257,7 @@ fine) and `deno` is on PATH.
 | `importMetaMain` | `true` (M2) |
 | `denoGlobals` | `'warn'` for browser platform (M2) |
 | `jsx` | `'auto'` (host transpiles local files; engine transpiles remote) |
+| `importers` | `{ include?, exclude? }` filter on importer paths; unset = act on every importer |
 | `debug` | `process.env.DEBUG` matches `unplugin-deno` |
 
 `HostContext` (from `hosts/shared.ts`): `{ framework, root, command: 'build' | 'serve', platformHint, logger,
@@ -436,7 +438,7 @@ hosts where unplugin drops `external: true` (webpack/Rspack, M2) the adapter inj
 ### 5.8 Diagnostics (`src/diagnostics/`)
 
 `DenoPluginError extends Error { code: ErrorCode; hint?: string; specifier?: string; importer?: string; cause? }`
-with codes: `CONFIG_NOT_FOUND`, `CONFIG_INVALID`, `IMPORT_MAP_INVALID`, `LOCKFILE_INVALID`, `RESOLVE_NOT_FOUND`,
+with codes: `OPTIONS_INVALID`, `CONFIG_NOT_FOUND`, `CONFIG_INVALID`, `IMPORT_MAP_INVALID`, `LOCKFILE_INVALID`, `RESOLVE_NOT_FOUND`,
 `RESOLVE_NOT_EXPORTED`, `RESOLVE_UNMAPPED_BARE`, `RESOLVE_CONSTRAINT`, `RESOLVE_FAILED`, `NOT_IN_LOCKFILE`,
 `LOCKFILE_FROZEN_DRIFT`, `CACHED_ONLY_MISS`, `DISALLOWED_HOST`, `INTEGRITY_MISMATCH`, `MIRROR_WRITE_FAILED`,
 `ENGINE_UNAVAILABLE`, `UNSUPPORTED_MEDIA_TYPE`. Messages are one sentence; `hint` says what to do

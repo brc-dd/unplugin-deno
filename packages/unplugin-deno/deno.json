@@ -1,0 +1,32 @@
+{
+  "name": "@brc-dd/unplugin-deno",
+  "version": "0.0.0",
+  "license": "MIT",
+  "exports": {
+    ".": "./dist/index.js",
+    "./vite": "./dist/vite.js",
+    "./rolldown": "./dist/rolldown.js",
+    "./rollup": "./dist/rollup.js",
+    "./esbuild": "./dist/esbuild.js",
+    "./webpack": "./dist/webpack.js",
+    "./rspack": "./dist/rspack.js",
+    "./rsbuild": "./dist/rsbuild.js",
+    "./bun": "./dist/bun.js",
+    "./farm": "./dist/farm.js",
+    "./register": "./dist/register.js",
+    "./api": "./dist/api.js"
+  },
+  "imports": {
+    "@jridgewell/remapping": "npm:@jridgewell/remapping@^2.3.5",
+    "es-module-lexer": "npm:es-module-lexer@^3.0.2",
+    "jsonc-parser": "npm:jsonc-parser@^3.3.1",
+    "magic-string": "npm:magic-string@^1.4.2",
+    "tinyglobby": "npm:tinyglobby@^0.2.17",
+    "unplugin": "npm:unplugin@^3.4.0"
+  },
+  "publish": {
+    "include": ["dist", "vendor", "README.md", "LICENSE"],
+    "exclude": ["**/*.test.*"]
+  },
+  "lock": false
+}
