@@ -1,0 +1,10 @@
+{
+  "title": "deno.json-only project (nodeModulesDir \"none\"): Vite's cacheDir defaults to <root>/node_modules/.vite, and npm packages from Deno's global cache (ES modules, CommonJS and packages importing others) are prebundled in dev",
+  "entries": ["src/main.ts"],
+  "hosts": ["vite"],
+  "issues": ["denoland/deno-vite-plugin#87"],
+  "expect": {
+    "values": { "green": "function", "ms": 172800000, "stripped": "cake" },
+    "prebundled": ["kleur", "ms", "strip-ansi"]
+  }
+}

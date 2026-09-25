@@ -91,6 +91,27 @@ export interface ResolveRequest {
   isEntry?: boolean | undefined
   /** Vite's dependency scan (`opts.scan`); reserved for the Vite adapter. */
   scan?: boolean | undefined
+  /**
+   * The platform of the importing environment when a host builds several at once (Vite: a
+   * browser client and server environments); the build's own platform when omitted.
+   */
+  target?: ResolveTarget | undefined
+}
+
+/**
+ * The platform an import is resolved for (§5.6) when it differs from the build's: the plugin
+ * state keeps an engine, a mirror generation and a resolver per target.
+ */
+export interface ResolveTarget {
+  platform: Platform
+  /** The host's export conditions for the engine (instead of `StateHints.conditions`). */
+  conditions?: readonly string[] | undefined
+  /**
+   * `bundle` patterns added to the option's for this target, e.g. `npm:*` and `jsr:*` for
+   * server code that Vite's dev server runs in-process, where `platform: 'deno'` externals
+   * cannot be loaded.
+   */
+  bundle?: readonly Pattern[] | undefined
 }
 
 /** What the resolver reads from the plugin state. */
@@ -359,11 +380,12 @@ async function relativeImport(
   const { state, context } = step
   if (context.kind === 'mirror') {
     // Rewritten specifiers in mirror files are paths relative to the mirror file (§5.3).
-    const syntax = state.flavor === 'win32' ? win32 : posix
+    const flavor = state.flavor ?? HOST_PATH_FLAVOR
+    const syntax = flavor === 'win32' ? win32 : posix
     const target =
       spec.kind === 'absolute' ? spec.base : syntax.resolve(syntax.dirname(context.path), spec.base)
     if (await isFile(target)) {
-      const url = (await state.mirror.urlForMirrorPath(target)) ?? toFileUrl(target, state.flavor)
+      const url = (await state.mirror.urlForMirrorPath(target)) ?? toFileUrl(target, flavor)
       return step.denoType === undefined
         ? { type: 'path', path: `${target}${query}` }
         : markerOutcome(`${target}${query}`, step.denoType, url)

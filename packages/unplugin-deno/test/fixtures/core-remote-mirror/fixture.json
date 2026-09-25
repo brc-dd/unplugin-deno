@@ -5,7 +5,7 @@
   "expect": {
     "values": { "joined": "a/b", "closest": "help" },
     "mirror": {
-      "jsrPath": "https/jsr.io/@std/path/1.1.6/mod.ts.js",
+      "jsrPath": "https/jsr.io/@std/path/1.1.6/posix/mod.ts.js",
       "closest": "https/deno.land/std@0.224.0/text/closest_string.ts.js"
     }
   }

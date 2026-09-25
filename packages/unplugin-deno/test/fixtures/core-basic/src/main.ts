@@ -1,4 +1,4 @@
-import { join } from '@std/path'
+import { join } from '@std/path/posix'
 import kleur from 'kleur'
 import { closestString } from 'https://deno.land/std@0.224.0/text/closest_string.ts'
 import answer from 'data:text/javascript,export default 42'

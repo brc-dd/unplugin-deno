@@ -1,0 +1,15 @@
+{
+  "title": "Vite SSR for the Deno platform: npm:, jsr: (through an import map) and node: imports stay external and pinned in the build, and load through Vite in the dev server",
+  "entries": ["src/server.ts"],
+  "hosts": ["vite"],
+  "issues": ["denoland/deno-vite-plugin#56", "vitejs/vite#20828", "vitejs/vite#20850"],
+  "expect": {
+    "externals": ["jsr:@std/path@1.1.6", "node:fs", "npm:kleur@4.1.5"],
+    "values": {
+      "joined": "a/b",
+      "answer": 42,
+      "exists": "function",
+      "bold": "function"
+    }
+  }
+}

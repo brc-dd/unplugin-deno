@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "logo": "./assets/logo.png",
+    "data-json": "./src/data.json"
+  }
+}

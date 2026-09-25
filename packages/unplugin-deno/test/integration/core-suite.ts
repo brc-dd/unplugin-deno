@@ -291,7 +291,8 @@ export function coreSuite(host: SuiteHost): void {
       expect(code).toContain('export * from "./join.ts.js"')
       expect(code).toMatch(/\/\/# sourceMappingURL=mod\.ts\.js\.map\n$/)
       const joinCode = await readFile(join(dirname(mod), 'join.ts.js'), 'utf8')
-      expect(joinCode).toContain('from "../../internal/1.0.14/os.ts.js"')
+      // Relative imports are rewritten to sibling mirror files (posix/join.ts → _common/…).
+      expect(joinCode).toContain('from "../_common/assert_path.ts.js"')
       const closest = await readFile(
         join(generation, ...expected.mirror.closest.split('/')),
         'utf8',
@@ -304,18 +305,18 @@ export function coreSuite(host: SuiteHost): void {
         sourcesContent: string[]
         file: string
       }
-      expect(map.sources).toEqual(['https://jsr.io/@std/path/1.1.6/mod.ts'])
+      expect(map.sources).toEqual(['https://jsr.io/@std/path/1.1.6/posix/mod.ts'])
       expect(map.file).toBe('mod.ts.js')
       expect(map.sourcesContent[0]).toContain('export * from "./join.ts";')
 
       const manifest = JSON.parse(await readFile(join(generation, 'manifest.json'), 'utf8')) as {
         modules: Record<string, { file: string; integrity: string; deps: string[] }>
       }
-      expect(manifest.modules['https://jsr.io/@std/path/1.1.6/mod.ts']?.file).toBe(
+      expect(manifest.modules['https://jsr.io/@std/path/1.1.6/posix/mod.ts']?.file).toBe(
         expected.mirror.jsrPath,
       )
-      expect(manifest.modules['https://jsr.io/@std/path/1.1.6/mod.ts']?.deps).toContain(
-        'https://jsr.io/@std/path/1.1.6/join.ts',
+      expect(manifest.modules['https://jsr.io/@std/path/1.1.6/posix/mod.ts']?.deps).toContain(
+        'https://jsr.io/@std/path/1.1.6/posix/join.ts',
       )
       const lock = JSON.parse(await readFile(project.path('deno.lock'), 'utf8')) as {
         remote: Record<string, string>

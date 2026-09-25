@@ -1,0 +1,23 @@
+{
+  "title": "Vite SPA: index.html and a TypeScript entry importing jsr: through an import-map alias, an npm: subpath, an https: module with relative imports, a data: module, a ?raw file through an import-map path alias, text and bytes attributes and JSON",
+  "entries": ["src/main.ts"],
+  "hosts": ["vite"],
+  "issues": [
+    "denoland/deno-vite-plugin#98",
+    "denoland/deno-vite-plugin#100",
+    "rolldown/rolldown#2758"
+  ],
+  "expect": {
+    "values": {
+      "joined": "a/b",
+      "red": "function",
+      "closest": "help",
+      "answer": 42,
+      "icon": "<svg xmlns=\"http://www.w3.org/2000/svg\"><circle r=\"1\" /></svg>\n",
+      "text": "hello text\n",
+      "bytes": [0, 1, 2, 250, 255],
+      "data": { "name": "vite-spa" }
+    },
+    "prebundled": ["@std/path", "npm:kleur@^4/colors"]
+  }
+}

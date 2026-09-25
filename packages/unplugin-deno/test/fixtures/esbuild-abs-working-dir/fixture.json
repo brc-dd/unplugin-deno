@@ -1,0 +1,9 @@
+{
+  "title": "esbuild absWorkingDir differs from the process working directory: deno.json, entry points and the mirror are found from absWorkingDir",
+  "entries": ["src/main.ts"],
+  "hosts": ["esbuild"],
+  "issues": ["denoland/deno-esbuild-plugin#29"],
+  "expect": {
+    "values": { "message": "found from absWorkingDir", "joined": "x/y" }
+  }
+}

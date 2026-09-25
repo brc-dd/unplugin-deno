@@ -44,7 +44,13 @@ import { defaultCacheDir, resolveOptions } from './options.js'
 import type { Options } from './options.js'
 import type { PlatformHint } from './platform.js'
 import { conditionsFor, derivePlatform, enginePlatformFor } from './platform.js'
-import type { ResolveOutcome, Resolver, ResolveRequest, ResolverState } from './resolve.js'
+import type {
+  ResolveOutcome,
+  Resolver,
+  ResolveRequest,
+  ResolverState,
+  ResolveTarget,
+} from './resolve.js'
 import { BROAD_RESOLVE_ID_FILTER, createResolver, resolveIdFilter } from './resolve.js'
 import { PLUGIN_VERSION } from './version.js'
 import type { InvalidationTarget } from './watch.js'
@@ -71,10 +77,22 @@ interface Configuration {
   conditions: string[]
   npmStrategy: NpmStrategy
   cacheDir: string
+  /** `configGeneration(project)`, the input of every mirror generation. */
+  configGeneration: string
   generation: string
   mirror: Mirror
   denoDirs: string[]
   filter: RegExp
+  /** Resolvers of other {@link ResolveTarget}s, keyed by target. */
+  targets: Map<string, Resolver>
+  /** Mirrors of other generations (targets with another platform or conditions). */
+  mirrors: Map<string, Mirror>
+}
+
+/** The platform and conditions an engine is created for. */
+export interface EngineTarget {
+  platform: Platform
+  conditions: readonly string[]
 }
 
 /** A source map in the shape hosts accept (`sources` without `null`, `file` a string). */
@@ -211,12 +229,8 @@ export class PluginState implements ResolverState, InvalidationTarget {
     ])
     const npmStrategy = npmStrategyFor(this.options.npm, project.nodeModules.mode)
     const cacheDir = this.options.cacheDir ?? defaultCacheDir(project.workspaceRoot)
-    const generation = mirrorGeneration(
-      await configGeneration(project),
-      PLUGIN_VERSION,
-      platform,
-      conditions,
-    )
+    const projectGeneration = await configGeneration(project)
+    const generation = mirrorGeneration(projectGeneration, PLUGIN_VERSION, platform, conditions)
     const mirror = createMirror({
       cacheDir,
       generation,
@@ -231,10 +245,13 @@ export class PluginState implements ResolverState, InvalidationTarget {
       conditions,
       npmStrategy,
       cacheDir,
+      configGeneration: projectGeneration,
       generation,
       mirror,
       denoDirs: denoDirVariants(resolveDenoDir()),
       filter: resolveIdFilter(project, this.options, platform),
+      targets: new Map(),
+      mirrors: new Map(),
     }
     const removed = await mirror.collectGarbage().catch((error: unknown) => {
       this.logger.debug(`[mirror] garbage collection failed: ${String(error)}`)
@@ -312,11 +329,15 @@ export class PluginState implements ResolverState, InvalidationTarget {
   // -- engines ----------------------------------------------------------------------------------
 
   /**
-   * The engine for the build's platform and conditions (created on first use). `raw` is a
-   * second engine that only loads raw assets the main engine refuses (see `MirrorOptions`).
+   * The engine for the build's platform and conditions, or for `target` (created on first use).
+   * `raw` is a second engine that only loads raw assets the main engine refuses (see
+   * `MirrorOptions`).
    */
-  engine(purpose: 'main' | 'raw' = 'main'): Promise<Engine> {
-    const { project, platform, conditions } = this.#configured()
+  engine(purpose: 'main' | 'raw' = 'main', target?: EngineTarget): Promise<Engine> {
+    const configuration = this.#configured()
+    const { project } = configuration
+    const platform = target?.platform ?? configuration.platform
+    const conditions = target?.conditions ?? configuration.conditions
     const enginePlatform = enginePlatformFor(platform)
     const key = `${purpose}\0${enginePlatform}\0${conditions.join(',')}`
     let engine = this.#engines.get(key)
@@ -331,7 +352,7 @@ export class PluginState implements ResolverState, InvalidationTarget {
           nodeModulesDir: project.nodeModules.mode,
         },
         platform: enginePlatform,
-        conditions,
+        conditions: [...conditions],
         cachedOnly: this.options.cachedOnly,
         ...(project.minimumDependencyAge.newestDependencyDate === null
           ? {}
@@ -359,14 +380,15 @@ export class PluginState implements ResolverState, InvalidationTarget {
    * Diagnostics with a code (e.g. `CACHED_ONLY_MISS`) are warnings; the others are debug output,
    * because the graph also holds imports the host owns (`?raw`, `node_modules` packages, other
    * plugins' virtual modules) that Deno reports as errors. Failing owned imports fail in
-   * `resolveId` with their importer.
+   * `resolveId` with their importer. With a `target`, the engine of that target is seeded; with
+   * an `input`, that input instead of the build's (hosts that meet entries while resolving).
    */
-  async addEntrypoints(): Promise<void> {
+  async addEntrypoints(target?: ResolveTarget, input?: HostInput): Promise<void> {
     const { project } = this.#configured()
-    const entries = normalizeEntries(this.#hints.input, project.root)
+    const entries = normalizeEntries(input ?? this.#hints.input, project.root)
     if (entries.length === 0) return
     const started = performance.now()
-    const engine = await this.engine()
+    const engine = await this.engine('main', target && this.#engineTarget(target))
     const diagnostics = await engine.addEntrypoints(entries)
     for (const diagnostic of diagnostics) {
       if (diagnostic.code === undefined) this.logger.debug(`[engine] ${diagnostic.message}`)
@@ -379,7 +401,10 @@ export class PluginState implements ResolverState, InvalidationTarget {
 
   // -- hooks --------------------------------------------------------------------------------------
 
-  /** `resolveId` for the owned id `rawId` (§5.2). */
+  /**
+   * `resolveId` for the owned id `rawId` (§5.2), for the build's platform or for
+   * `request.target`.
+   */
   async resolve(
     rawId: string,
     importer: string | undefined,
@@ -387,7 +412,82 @@ export class PluginState implements ResolverState, InvalidationTarget {
   ): Promise<ResolveOutcome> {
     if (isForeignId(rawId)) return null
     await this.prepare()
-    return this.resolver.resolveOwned(rawId, importer, request)
+    const resolver =
+      request.target === undefined ? this.resolver : this.#targetResolver(request.target)
+    return resolver.resolveOwned(rawId, importer, request)
+  }
+
+  /** The platform and engine conditions of `target` (§5.6). */
+  #engineTarget(target: ResolveTarget): EngineTarget {
+    const hostConditions = target.conditions ?? this.#hints.conditions ?? []
+    return {
+      platform: target.platform,
+      conditions: conditionsFor(target.platform, [...hostConditions, ...this.options.conditions]),
+    }
+  }
+
+  /**
+   * The resolver of `target`: the build's own when the target changes nothing, otherwise one
+   * that reads the target's platform, engine, mirror generation and `bundle` patterns. The
+   * mirror of a generation is shared by the targets that have it.
+   */
+  #targetResolver(target: ResolveTarget): Resolver {
+    const configuration = this.#configured()
+    const engineTarget = this.#engineTarget(target)
+    const { platform, conditions } = engineTarget
+    const bundle = target.bundle ?? []
+    const sameConditions =
+      conditions.length === configuration.conditions.length &&
+      conditions.every((condition, index) => condition === configuration.conditions[index])
+    if (platform === configuration.platform && sameConditions && bundle.length === 0) {
+      return this.resolver
+    }
+    const key = JSON.stringify([platform, conditions, bundle.map(String)])
+    let resolver = configuration.targets.get(key)
+    if (resolver === undefined) {
+      const options =
+        bundle.length === 0
+          ? this.options
+          : { ...this.options, bundle: [...this.options.bundle, ...bundle] }
+      resolver = createResolver({
+        options,
+        project: configuration.project,
+        platform,
+        npmStrategy: configuration.npmStrategy,
+        denoDirs: configuration.denoDirs,
+        mirror: this.#mirrorFor(configuration, engineTarget),
+        logger: this.logger,
+        framework: this.framework,
+        flavor: this.flavor,
+        engine: () => this.engine('main', engineTarget),
+      })
+      configuration.targets.set(key, resolver)
+    }
+    return resolver
+  }
+
+  /** The mirror of `target`'s generation (the build's own mirror when the generation is its). */
+  #mirrorFor(configuration: Configuration, target: EngineTarget): Mirror {
+    const generation = mirrorGeneration(
+      configuration.configGeneration,
+      PLUGIN_VERSION,
+      target.platform,
+      target.conditions,
+    )
+    if (generation === configuration.generation) return configuration.mirror
+    let mirror = configuration.mirrors.get(generation)
+    if (mirror === undefined) {
+      mirror = createMirror({
+        cacheDir: configuration.cacheDir,
+        generation,
+        engine: () => this.engine('main', target),
+        rawEngine: () => this.engine('raw', target),
+        lockfile: configuration.project.lockfile,
+        logger: this.logger,
+      })
+      configuration.mirrors.set(generation, mirror)
+    }
+    return mirror
   }
 
   /**
@@ -447,9 +547,13 @@ export class PluginState implements ResolverState, InvalidationTarget {
     return true
   }
 
-  /** Persists the mirror manifest. */
+  /** Persists the mirror manifests (the build's and those of other targets). */
   async flush(): Promise<void> {
-    await this.#configuration?.mirror.flush()
+    const configuration = this.#configuration
+    if (configuration === undefined) return
+    await Promise.all(
+      [configuration.mirror, ...configuration.mirrors.values()].map((mirror) => mirror.flush()),
+    )
   }
 
   /** Flushes the manifest and disposes the engines (end of a non-watch build). */

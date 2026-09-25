@@ -1,0 +1,9 @@
+{
+  "title": "Workspace with the Vite root at a member (app) that imports another member (lib) outside the root by its name: lib is served as a plain file and updates when edited",
+  "entries": ["app/src/main.ts"],
+  "hosts": ["vite"],
+  "issues": ["denoland/deno-vite-plugin#77"],
+  "expect": {
+    "values": { "message": "lib v1", "local": "app local" }
+  }
+}

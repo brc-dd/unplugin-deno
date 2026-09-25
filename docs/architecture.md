@@ -459,7 +459,7 @@ is left to the host (it handles JSON natively; marking it would create a second 
 |---|---|
 | Vite `environment.config.consumer === 'client'` | `browser` |
 | Vite server environments | `options.platform` (per-environment record allowed) → else `deno` when the project has a `deno.json`, else `node` |
-| esbuild `initialOptions.platform`: `browser` → browser; `node`/`neutral` → `deno` if `deno.json` exists else `node` | |
+| esbuild `initialOptions.platform`: `browser` (also when unset, esbuild's default) → browser; `node`/`neutral` → `deno` if `deno.json` exists else `node` | |
 | Rolldown `platform`: same mapping as esbuild | |
 | Rollup (no platform) | `options.platform` → else `deno` if `deno.json` exists else `node` |
 | webpack `compiler.platform.{web,node,deno}` / Rspack `target` (M2) | mapped directly |
@@ -606,6 +606,65 @@ Rollup-family hooks are placed under the `vite`/`rolldown`/`rollup` escape hatch
 - SSR: never set `noExternal: true`; the pinned-external policy is applied per server environment. The
   `resolve.builtins` experiment (`/^npm:/`, `/^jsr:/` when the dev server runs under Deno) is opt-in (M2).
 
+**Corrections from the implementation (Vite 8.3.1 and 7.3.6; `src/hosts/vite/`; tests in
+`test/integration/vite.test.ts` and `vite-dev.test.ts`, run on Vite 8 and 7; supersedes the Vite bullet of §6.8):**
+
+- **Platform per environment.** Client environments build for `browser` unless a `platform` *record* names them (a
+  `platform` string applies to server environments only); server environments take the record entry, the string,
+  else `deno` with a `deno.json`, else `node`. The core resolves per call through `ResolveRequest.target`
+  (`{ platform, conditions?, bundle? }`): `PluginState` keeps a resolver, an engine and a mirror generation per target
+  (one mirror per generation, shared by targets with equal platform and conditions; `flush` writes every manifest),
+  and `addEntrypoints(target, input)` seeds a target's engine. The build's own platform (the hint) is `browser`.
+- **Dev server externals.** Vite's module runner runs server environments inside the dev server's runtime and cannot
+  load `npm:`/`jsr:` externals (`fetchModule` node-resolves bare-looking ids; dev import analysis ignores
+  `external: true`; vitejs/vite#20828, #20850), so in the dev server Deno server environments resolve with
+  `bundle: ['npm:*', 'jsr:*']`: JSR through the mirror, npm through redirects (inlined by the runner, so CommonJS
+  packages need `ssr.optimizeDeps`), in the same mirror generation as the build. Builds keep them external and pinned;
+  Vite neither re-externalises nor inlines them, and `noExternal` is never set.
+- **`node:` builtins** are left to Vite in every environment: its builtin externals are side-effect free, while an
+  `external: true` from the plugin kept an unused `import "node:module"` of Rolldown's runtime in Vite 8 SSR output.
+- **Conditions.** `configEnvironment` returns `resolve.conditions`/`externalConditions` as Vite's defaults
+  (`defaultServerConditions`, `defaultExternalConditions`, equal in 7 and 8) plus `deno` when the environment sets
+  none (a configured list replaces the defaults), else only `deno` (Vite concatenates returned arrays).
+- **`config` and `configResolved`.** The root is resolved like Vite's (`resolve(root)`, symlinks resolved unless
+  `preserveSymlinks`) and the project is loaded in `config`. The `https:`/`data:` alias is appended to the configured
+  aliases (the hook mutates the config: an alias returned from `config` is placed first and would shadow user aliases
+  of remote URLs). `server.fs.allow` is extended in `configResolved` (mirror and workspace root, real paths too): a
+  `server.fs.allow` returned from `config` replaces Vite's default (the searched workspace root) instead of extending
+  it. `vite` is imported for types only, so other hosts never load it; the version comes from `this.meta.viteVersion`.
+- **Optimizer.** The optimizer plugin is added to each environment's `optimizeDeps` in `configEnvironment` (dev
+  server only): `rolldownOptions.plugins` on Vite 8, an esbuild twin (`optimizer-esbuild.ts`) in
+  `esbuildOptions.plugins` on Vite 7 (no `this.meta.rolldownVersion`). Its name, `unplugin-deno:optimizer:<generation>`,
+  makes Vite's optimizer cache key change with `deno.json`/`deno.lock`. Vite runs these plugins in its dependency
+  *scan* too, before its own; they act only for importers that are package files (`node_modules`, global npm cache,
+  mirror). Keys are the specifier as written (`kleur`, `npm:kleur@^4/colors`, `@std/path`, `jsr:…`, `https://…`), the
+  scanner's key. The scanner records `node_modules` paths itself (npm redirects; mirror files, as the mirror is under
+  `node_modules`); global-cache files are registered by `resolveId` during the scan and hidden from the scanner (a
+  non-absolute external id); `https:`/`data:` imports never reach the scanner's resolver, so the optimizer plugin
+  registers their mirror files during the scan. JSR, npm (also CommonJS from the global cache), `https:` and `data:`
+  imports are thus prebundled in one optimizer run on Vite 8 and 7; `optimizeDeps.exclude` and `noDiscovery` are
+  honoured. Vite's `vite:pre-alias` also registers `data:` imports (the alias matches them), under the same key.
+- **Markers** resolve to `\0deno:<type>:<file>.js` in Vite: `vite:css` claims every id matching `\.css(?:$|\?)`,
+  `vite:json` `\.json(?:$|\?)` and framework plugins `\.vue` plus a query, whatever the query holds. `load` calls
+  `addWatchFile(file)`, so edits of the target update its importers.
+- **npm installs (`nodeModulesDir: "auto"`).** The engine installs packages into `node_modules/.deno` only when
+  entrypoints are added, and a resolution that failed for an uninstalled package keeps failing on that engine. A Vite
+  app's inputs are HTML files, so `install.ts` adds each `npm:` requirement (or the `npm:` target of an import-map
+  key) as an entrypoint before its first resolution, batched per tick and serialised. This belongs in the engine
+  (`resolve()` should install); only Vite needs it, because the other hosts seed the engine with module inputs.
+- **Watching and lifecycle.** `configureServer` adds the project's watch files to the watcher; on `add`/`change`/
+  `unlink` of one it runs `watchChange` (serialised), then `moduleGraph.invalidateAll()` and
+  `hot.send({ type: 'full-reload' })` for every environment; `hotUpdate` returns `[]` for those files. `watchChange`
+  reloads only in build watch mode. A prebundled specifier whose mapping changed is rebuilt at the next server start.
+  `buildStart` seeds the environment's engine with the build's module inputs (HTML skipped); `buildEnd` flushes in
+  build watch mode and closes otherwise (a dev server calls it once, when it closes).
+- **Mirror generations.** A Vite app uses one generation per platform (client and server), and `collectGarbage` keeps
+  the current generation and the most recently used other one, so concurrent processes building other platforms can
+  remove a generation another process is still reading (M2: collect by age instead).
+- Measured (`vite-spa`, fresh fixture copy, warm `DENO_DIR`, macOS): first `transformRequest('/src/main.ts')`
+  0.22–0.39 s on Node 26, 0.25–0.39 s on Deno 2.9.7, 0.26–0.42 s on Bun 1.3.14 (the upper bound includes loading
+  the wasm); the whole page with its four prebundled dependencies 0.31–0.53 s; one optimizer run.
+
 ### 6.2 Rolldown (and tsdown)
 
 - `resolveId: { filter: { id: <RegExp> }, handler }` (Rust-side filter); options are `{ kind, isEntry, custom }` (no
@@ -634,6 +693,48 @@ Rollup-family hooks are placed under the `vite`/`rolldown`/`rollup` escape hatch
   `args.resolveDir` under `DENO_DIR`); `onEnd` → flush warnings. Import attributes arrive as `args.with`. Platform from
   `initialOptions.platform`, conditions from `initialOptions.conditions`. Honour `initialOptions.external` and
   `packages: 'external'`.
+
+**Corrections from the implementation (esbuild 0.28.2; `src/hosts/esbuild/`, tests in `test/integration/esbuild.test.ts`;
+supersedes the esbuild bullet of §6.8):**
+
+- **Filters.** `setup` is async and loads the project first (hints from `initialOptions`), because esbuild takes filters
+  once, at `setup`. The main filter is `resolveIdFilter(project, { npm: 'node_modules' }, platform)` (schemes, marker,
+  import-map keys, `package.json` dependencies for the Deno platform) also for the global-cache strategy; bare imports
+  then get the separate `/^[^./]/` handler, guarded by the *importer* (global npm cache, the mirror, or `node_modules`
+  with `npm: 'deno-cache'`). When the project cannot be loaded at `setup` the broad filter is used and `onStart`
+  reports the error. Keys added to the import map while a context runs are not in the filter: the reload warns that a
+  new context is needed. There is no `/.*/` filter outside the plugin's own namespace, and no `onLoad` for files.
+- **esbuild applies `external` and `packages: 'external'` only after the plugins' `onResolve` callbacks** (verified), and
+  it treats `jsr:…`, `npm:…` and `https://…` as package paths. Imports matching `initialOptions.external` (esbuild's
+  rules: one `*` wildcard, package paths with their subpaths, never entry points) are left to esbuild, which keeps them
+  as written. `packages: 'external'` adds `npm:*` and `jsr:*` to the plugin's `external` patterns and pins them
+  (`pinExternals` defaults to `true`), so mapped bare names become `npm:x@<version>`; unmapped bare names stay esbuild's.
+- **Platform.** `browser` → browser, also when `platform` is unset (esbuild's own default); `node` and `neutral` →
+  `deno` with a `deno.json`, else `node`.
+- **Attributes.** The marker is added from `args.with` before `state.resolve`. Local `text`/`bytes` imports are left to
+  esbuild's own loaders (esbuild ≥ 0.28 / 0.25.11; same values as the markers); esbuild rejects `with { type: "css" }`,
+  so an extra `onResolve` for `.css` paths turns local css imports into markers (`host-marker` outcome, resolved with
+  `build.resolve` without the attribute). A `css` attribute on a non-`.css` local file stays unsupported. Marker
+  modules live in the `unplugin-deno` namespace under paths relative to `absWorkingDir` (the core id travels in
+  `pluginData`), so output comments, source maps and the metafile have no machine paths and no `\0`.
+- **Redirects** call `build.resolve(request, { kind, resolveDir: packageDir, importer: packageJsonPath, namespace: 'file',
+  with, pluginData })`: the `package.json` importer (as on Rollup) keeps the request from re-entering the plugin's
+  import-map handler (it resolves bare names from `node_modules` importers to `null`). `sideEffects`, `suffix`,
+  `pluginData` and warnings are forwarded; on errors the engine's `fallbackPath` is used. Queries become `suffix`.
+- **CSS.** esbuild sends `@import` and `url()` references to `onResolve` (kinds `import-rule`, `url-token`,
+  `composes-from`); remote and `data:` URLs there are left to esbuild (kept as written / inlined), not mirrored.
+- **Lifecycle.** esbuild has no `watchChange`: `onStart` compares the watched files' contents with the last load and
+  reloads through `watchChange(file)`; it seeds the engine only when the engines lack the build's entry points. Owned
+  results carry `watchFiles` (configs, import maps, lockfile) for `ctx.watch()`. `onDispose` runs after `build()` has
+  resolved (a `setTimeout`), so plugin reuse is tracked per *running* build (`onStart`…`onEnd`, which esbuild calls even
+  after `onStart` errors and cancellations): builds may reuse an instance one after the other with any settings (the
+  project is reloaded) and concurrently with equal settings; a concurrent build with other settings fails with
+  `OPTIONS_INVALID`. After an `onStart` error esbuild still resolves every import; owned imports are then returned as
+  externals so the build fails with that one error.
+- **Messages.** Errors are returned as esbuild messages (`<message> (<code>)`, the hint as a note, the error in
+  `detail`), so esbuild shows them at the import; warnings are buffered and returned from `onStart`/`onEnd`. esbuild has
+  no informational channel for plugins, so debug output goes to stderr.
+- `setup` rejects a host that is not esbuild (no `initialOptions`/`resolve`, e.g. `Bun.build`) with `ENGINE_UNAVAILABLE`.
 
 ### 6.5 webpack (M2)
 

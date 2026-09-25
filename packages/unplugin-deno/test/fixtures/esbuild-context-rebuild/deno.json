@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "greeting": "./src/hello.ts"
+  }
+}

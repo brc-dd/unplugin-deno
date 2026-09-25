@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "#message": "./src/message.ts",
+    "@std/path": "jsr:@std/path@^1"
+  }
+}

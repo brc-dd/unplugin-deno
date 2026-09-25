@@ -1,0 +1,10 @@
+{
+  "title": "esbuild.context() rebuilds reuse the loaded project, engine and mirror, and reload them when deno.json changes between rebuilds",
+  "entries": ["src/main.ts"],
+  "hosts": ["esbuild"],
+  "issues": ["denoland/deno-esbuild-plugin#6"],
+  "expect": {
+    "first": { "joined": "a/b", "greeting": "hello" },
+    "changed": { "joined": "a/b", "greeting": "goodbye" }
+  }
+}

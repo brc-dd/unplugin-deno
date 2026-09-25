@@ -1,0 +1,9 @@
+{
+  "title": "Binary assets next to Deno imports: a .png through esbuild's file loader (directly and through an import-map alias), bytes and text imports, and CSS whose remote url() and @import stay as written",
+  "entries": ["src/main.ts"],
+  "hosts": ["esbuild"],
+  "issues": ["denoland/deno-esbuild-plugin#35", "denoland/deno-esbuild-plugin#28"],
+  "expect": {
+    "values": { "joined": "a/b", "json": { "answer": 42 } }
+  }
+}

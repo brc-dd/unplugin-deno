@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "kleur": "npm:kleur@^4",
+    "@std/path": "jsr:@std/path@^1",
+    "@app/local": "./src/local.ts"
+  }
+}
