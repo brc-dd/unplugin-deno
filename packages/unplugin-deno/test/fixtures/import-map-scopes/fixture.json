@@ -1,0 +1,26 @@
+{
+  "title": "imports, scopes and jsr:/npm: package expansion in deno.json, plus a sub-project whose external importMap applies to its files",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "source": "Resolutions verified with Deno 2.9.7 (import.meta.resolve) on 2026-09-26.",
+  "expect": {
+    "autoLinks": ["legacy"],
+    "watchFiles": ["deno.json", "legacy/deno.json", "legacy/import_map.json"],
+    "resolve": [
+      ["src/main.ts", "@std/path", "jsr:@std/path@^1"],
+      ["src/main.ts", "@std/path/join", "jsr:@std/path@^1/join"],
+      ["src/main.ts", "kleur/colors", "npm:kleur@^4/colors"],
+      ["src/main.ts", "config", "src/config.ts"],
+      ["src/main.ts", "ui/button.ts", "src/ui/button.ts"],
+      ["src/main.ts", "helper", null],
+      ["src/admin/page.ts", "config", "src/admin/config.ts"],
+      ["src/admin/page.ts", "kleur", "npm:kleur@4.1.4"],
+      ["src/admin/page.ts", "kleur/colors", "npm:kleur@4.1.4/colors"],
+      ["src/admin/page.ts", "ui/button.ts", "src/ui/button.ts"],
+      ["legacy/mod.ts", "config", "legacy/lib/config.ts"],
+      ["legacy/mod.ts", "@std/path", "jsr:@std/path@1.0.0"],
+      ["legacy/mod.ts", "@std/path/join", "jsr:@std/path@^1/join"],
+      ["legacy/lib/x.ts", "helper", null]
+    ]
+  }
+}

@@ -1,0 +1,15 @@
+{
+  // A deno.jsonc: Deno accepts comments and trailing commas.
+  "imports": {
+    "@/": "./src/", // a path prefix
+    "greeting": "./src/greeting.ts",
+    /* a JSR package: Deno also maps its subpaths (@std/path/join) */
+    "@std/path": "jsr:@std/path@^1",
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact",
+  },
+  "nodeModulesDir": "none",
+  "lock": false,
+}

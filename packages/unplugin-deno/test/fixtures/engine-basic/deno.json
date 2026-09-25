@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "kleur": "npm:kleur@^4",
+    "fmt-colors": "https://deno.land/std@0.224.0/fmt/colors.ts"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "title": "workspace with a ./packages/* glob (a jsr package with its own imports, a package.json-only package) and a link to a sibling directory outside the workspace",
+  "entries": ["app/src/main.ts"],
+  "hosts": [],
+  "source": "The workspace root is app/ (the link target ../linked must lie outside it). Resolutions verified with Deno 2.9.7 (import.meta.resolve) on 2026-09-26.",
+  "expect": {
+    "workspaceRoot": "app",
+    "members": ["app/packages/jsr-pkg", "app/packages/node-pkg"],
+    "links": ["linked"],
+    "resolve": [
+      ["app/src/main.ts", "shared", "app/src/shared.ts"],
+      ["app/src/main.ts", "internal", null],
+      ["app/src/main.ts", "@fixture/jsr-pkg", "app/packages/jsr-pkg/mod.ts"],
+      ["app/src/main.ts", "@fixture/jsr-pkg/util", "app/packages/jsr-pkg/util.ts"],
+      ["app/src/main.ts", "jsr:@fixture/jsr-pkg@^1/util", "app/packages/jsr-pkg/util.ts"],
+      ["app/src/main.ts", "node-pkg", "app/packages/node-pkg/"],
+      ["app/src/main.ts", "left-pad", null],
+      ["app/src/main.ts", "@fixture/linked", "linked/mod.ts"],
+      ["app/src/main.ts", "linked-only", null],
+      ["app/src/main.ts", "@std/path/join", "jsr:@std/path@^1/join"],
+      ["app/packages/jsr-pkg/mod.ts", "shared", "app/packages/jsr-pkg/local-shared.ts"],
+      ["app/packages/jsr-pkg/mod.ts", "internal", "app/packages/jsr-pkg/internal.ts"],
+      ["app/packages/node-pkg/index.js", "left-pad", "npm:left-pad@^1.3.0"],
+      ["linked/mod.ts", "linked-only", "linked/only.ts"],
+      ["linked/mod.ts", "shared", "app/src/shared.ts"],
+      ["linked/mod.ts", "node-pkg", null]
+    ]
+  }
+}

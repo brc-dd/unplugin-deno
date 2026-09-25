@@ -1,0 +1,8 @@
+{
+  "workspace": ["./packages/*"],
+  "links": ["../linked"],
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "shared": "./src/shared.ts"
+  }
+}

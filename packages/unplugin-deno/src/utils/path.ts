@@ -160,3 +160,14 @@ function sameSegment(a: string | undefined, b: string | undefined, maybeDrive: b
   const drive = driveOf(a)
   return drive !== undefined && drive === driveOf(b)
 }
+
+/**
+ * Converts an absolute directory path to a `file:` URL string that ends with `/`, the form used
+ * for import-map scopes and workspace member directories (`/a/b` → `file:///a/b/`).
+ *
+ * @throws {TypeError} For relative paths, like {@link toFileUrl}.
+ */
+export function toDirUrl(path: string, flavor: PathFlavor = HOST_PATH_FLAVOR): string {
+  const url = toFileUrl(path, flavor)
+  return url.endsWith('/') ? url : `${url}/`
+}

@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@1.1.6",
+    "colors": "https://deno.land/std@0.224.0/fmt/colors.ts",
+    "strip-ansi": "npm:strip-ansi@7.1.0"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "title": "Engine contract: jsr:, npm:, pinned https:, node:, data: and relative imports through deno.json imports and deno.lock",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "resolve": {
+      "@std/path": "https://jsr.io/@std/path/1.1.6/mod.ts",
+      "@std/path/posix": "https://jsr.io/@std/path/1.1.6/posix/mod.ts",
+      "fmt-colors": "https://deno.land/std@0.224.0/fmt/colors.ts",
+      "kleur": "<deno-dir>/npm/registry.npmjs.org/kleur/4.1.5/index.mjs",
+      "kleur/colors": "<deno-dir>/npm/registry.npmjs.org/kleur/4.1.5/colors.mjs"
+    }
+  }
+}

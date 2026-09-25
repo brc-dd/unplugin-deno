@@ -1,0 +1,12 @@
+{
+  "name": "@fixture/jsr-pkg",
+  "version": "1.2.3",
+  "exports": {
+    ".": "./mod.ts",
+    "./util": "./util.ts"
+  },
+  "imports": {
+    "shared": "./local-shared.ts",
+    "internal": "./internal.ts"
+  }
+}

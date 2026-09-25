@@ -3,7 +3,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DenoPluginError } from '../diagnostics/errors.js'
-import { ensureDir, parseJsonc, readJsonc, writeFileAtomic } from './fs.js'
+import {
+  ensureDir,
+  locateJsonValue,
+  parseJson,
+  parseJsonc,
+  readJsonc,
+  writeFileAtomic,
+} from './fs.js'
 
 let dir: string
 
@@ -106,5 +113,44 @@ describe('readJsonc', () => {
 
   it('passes file system errors through', async () => {
     await expect(readJsonc(join(dir, 'missing.json'))).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+})
+
+describe('parseJson', () => {
+  it('parses strict JSON (BOM allowed)', () => {
+    expect(parseJson('\uFEFF{"imports": {"a": "./a.ts"}}', 'import_map.json')).toEqual({
+      imports: { a: './a.ts' },
+    })
+  })
+
+  it.each([
+    ['{\n  // no\n  "imports": {}\n}', 'InvalidCommentToken at 2:3'],
+    ['{"imports": {},}', 'PropertyNameExpected at 1:16'],
+    ['', 'ValueExpected at 1:1'],
+  ])('rejects %j', (text, detail) => {
+    expect(() => parseJson(text, 'im.json', 'IMPORT_MAP_INVALID')).toThrow(
+      expect.objectContaining({
+        code: 'IMPORT_MAP_INVALID',
+        message: `Cannot parse im.json: ${detail}.`,
+        hint: 'Fix the JSON syntax in im.json (comments and trailing commas are not allowed).',
+      }),
+    )
+  })
+})
+
+describe('locateJsonValue', () => {
+  const text = '{\n  // c\n  "imports": {\n    "a": [1, 2],\n  },\n}\n'
+
+  it('finds values by path', () => {
+    expect(locateJsonValue(text, [])).toEqual({ line: 1, column: 1 })
+    expect(locateJsonValue(text, ['imports'])).toEqual({ line: 3, column: 14 })
+    expect(locateJsonValue(text, ['imports', 'a'])).toEqual({ line: 4, column: 10 })
+    expect(locateJsonValue(text, ['imports', 'a', 1])).toEqual({ line: 4, column: 14 })
+    expect(locateJsonValue(`\uFEFF${text}`, ['imports'])).toEqual({ line: 3, column: 14 })
+  })
+
+  it('returns undefined for missing values and empty text', () => {
+    expect(locateJsonValue(text, ['scopes'])).toBeUndefined()
+    expect(locateJsonValue('', [])).toBeUndefined()
   })
 })

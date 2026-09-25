@@ -1,0 +1,20 @@
+{
+  "title": "deno.jsonc with comments and trailing commas: import map, JSX settings, nodeModulesDir and lock",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "configFile": "deno.jsonc",
+    "jsx": {
+      "jsx": "react-jsx",
+      "importSource": "preact"
+    },
+    "nodeModulesDir": "none",
+    "lockfile": null,
+    "resolve": [
+      ["src/main.ts", "greeting", "src/greeting.ts"],
+      ["src/main.ts", "@/name.ts", "src/name.ts"],
+      ["src/main.ts", "@std/path/join", "jsr:@std/path@^1/join"],
+      ["src/main.ts", "preact", null]
+    ]
+  }
+}

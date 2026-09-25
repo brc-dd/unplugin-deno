@@ -1,0 +1,15 @@
+{
+  "imports": {
+    "@std/path": "jsr:@std/path@^1",
+    "kleur": "npm:kleur@^4",
+    "config": "./src/config.ts",
+    "ui/": "./src/ui/",
+    "legacy": "./legacy/mod.ts"
+  },
+  "scopes": {
+    "./src/admin/": {
+      "config": "./src/admin/config.ts",
+      "kleur": "npm:kleur@4.1.4"
+    }
+  }
+}

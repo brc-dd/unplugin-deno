@@ -1,0 +1,5 @@
+{
+  "title": "Engine contract: a project without deno.json still resolves jsr: and npm: specifiers (global Deno cache)",
+  "entries": ["src/main.ts"],
+  "hosts": []
+}

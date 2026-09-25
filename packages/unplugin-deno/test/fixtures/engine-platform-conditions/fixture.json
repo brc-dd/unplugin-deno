@@ -1,0 +1,18 @@
+{
+  "title": "Engine contract: the browser and node platforms and extra conditions pick different files of esm-env's conditional exports",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "browser": {
+      "esm-env/browser": "true.js",
+      "esm-env/node": "false.js",
+      "esm-env/development": "dev-fallback.js"
+    },
+    "node": {
+      "esm-env/browser": "browser-fallback.js",
+      "esm-env/node": "true.js",
+      "esm-env/development": "dev-fallback.js"
+    },
+    "node+development": { "esm-env/development": "true.js" }
+  }
+}

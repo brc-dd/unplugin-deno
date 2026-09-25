@@ -13,6 +13,16 @@ import { setFetch, setLogger } from '../vendor/deno-loader/hooks.js'
 import { DenoPluginError } from './diagnostics/errors.js'
 
 export type { LoaderFetch, LoaderLogEvent, LoaderLogger } from '../vendor/deno-loader/hooks.js'
+// The loader's classes and response types, for `engine/loader/` (which must not import vendor/).
+export type {
+  EntrypointDiagnostic,
+  Loader,
+  LoadResponse,
+  ModuleLoadResponse,
+  ResolveError,
+  Workspace,
+  WorkspaceOptions,
+} from '../vendor/deno-loader/mod.js'
 
 /** The vendored loader module: `Workspace`, `Loader`, `ResolveError`, `MediaType`, … */
 export type VendoredDenoLoader = typeof DenoLoader

@@ -16,6 +16,8 @@ resolution and loading semantics; "mirror" = the project-local directory where r
 src/
 ├─ index.ts                 createUnplugin factory (`unplugin`), public types, `createDenoResolver` (M3)
 ├─ vite.ts … farm.ts        host entries: `export default createVitePlugin(factory)` etc. (unplugin has no subpaths)
+├─ vendored-deno-loader.ts  lazy import of ../vendor/deno-loader (must stay at depth 1 so the relative path is the
+│                           same from src/ and dist/; tsdown keeps the import external), logger/fetch injection
 ├─ core/
 │  ├─ plugin.ts             the UnpluginFactory: wires options → config → engine → hooks; branches on meta.framework
 │  ├─ options.ts            Options type, `resolveOptions(user, hostContext)` → ResolvedOptions (all defaults here)
@@ -41,8 +43,6 @@ src/
 │  ├─ loader/               `loader` engine over the vendored @deno/loader (§4.2)
 │  │  ├─ engine.ts
 │  │  └─ errors.ts          ResolveError → DenoPluginError mapping
-├─ vendored-deno-loader.ts  lazy import of ../vendor/deno-loader (must stay at depth 1 so the relative path is the
-│                           same from src/ and dist/; tsdown keeps the import external), logger/fetch injection
 │  └─ deno-cli/             `deno` engine (M2): deno info --json graph, localPath, DENO_DIR files
 ├─ hosts/
 │  ├─ vite/                 config/configEnvironment/configResolved/configureServer hooks, depsOptimizer wiring, HMR
@@ -161,6 +161,31 @@ Provides `pin(specifier)`, `has(specifier | url)`, `remoteIntegrity(url)`. Used 
 `lockfile: 'frozen'` drift detection (M2), and mirror integrity (§5.3). Older lockfile versions → warning, treated as
 absent.
 
+### 3.4 Corrections from the implementation (verified with Deno 2.9.7)
+
+- §3.1 step 2: Deno's nearest *config folder* can be a `package.json`-only directory; a parent `deno.json` without
+  members is then ignored, so `configPath` can be `null`. An explicit `config` path is treated as found in its
+  directory only when it is the file Deno would pick there; otherwise it is used alone.
+- Step 3: the first ancestor declaring members (`workspace`, or package.json `workspaces`) decides; when the nearest
+  folder is not one of them it stands alone (a warning for deno workspaces). Globs match
+  `<entry>/{deno.json,deno.jsonc,package.json}` (glob characters are only `*` and `?`, `!` excludes; dot directories,
+  `node_modules` and `.git` are skipped). A missing path member is skipped with a warning; a directory without a
+  config, a member outside the root, the root itself, a directory listed twice and duplicate `name`s are errors.
+- Step 4: a link into another workspace brings in that whole workspace; linking one of our own members is an error.
+  Deno 2.8.3+ also links automatically the `deno.json` directory a path value of an import map points into.
+- Step 5: external import map files are strict JSON and get no package expansion; inline `imports`/`scopes` win over
+  `importMap` (warning).
+- Step 6: without an explicit `nodeModulesDir`, the mode is `manual` only when the **workspace root** has a
+  `package.json` (a member's is not enough), `auto` for `vendor: true`, else `none`.
+- §3.2: only the `imports` of members and links become a scope for their directory (their `scopes` are ignored, with a
+  warning). `jsr:` specifiers naming a member or link resolve to its files when its `version` satisfies the range.
+  After a matched prefix Deno percent-decodes the rest and appends it segment by segment (dropping `.`/`..`), so an
+  opaque target such as `jsr:@s/p@1/` cannot take subpaths (`jsr:/@s/p@1/` can). `mapped` normalises `jsr:/`/`npm:/`
+  to `jsr:`/`npm:`, URLs keep `^` unencoded like Deno, and package.json-based matches also carry `packageName` and
+  `subpath` (npm workspace members map to their directory; the caller applies Node rules).
+- §3.3: `specifiers` keys are normalised requirements (`jsr:@std/path@^1` is stored as `jsr:@std/path@1`); `pin()`
+  returns the pinned specifier with its subpath (`jsr:@std/path@1.1.6/join`).
+
 ---
 
 ## 4. Engine (`src/engine/`)
@@ -230,6 +255,33 @@ resolved in bounded batches. Remote files are read from `modules[*].local` in `D
 transpile` per batch or the loader's emit). Selected by `engine: 'deno'`, or by `engine: 'auto'` when the config uses
 features the vendored loader lacks (`catalog:`, `jsrDepsInNodeModules`, glob members handled by our config layer are
 fine) and `deno` is on PATH.
+
+### 4.4 `loader` engine: verified behaviour (M1 corrections)
+
+Found while implementing `src/engine/` (each point has a test in `engine/**/*.test.ts`):
+
+- **`cachedOnly` blocks only npm downloads** (`NpmCacheSetting::Only`); remote `https:`/`jsr:` modules are still fetched
+  (the HTTP client's `cached_only` is never set). The engine enforces it: while a `cachedOnly` engine owns the fetch
+  hook every download is refused (`AbortError`, no retries) and the failures become `CACHED_ONLY_MISS`.
+- **Fallback rule, extended**: `resolveSync` also throws `ERR_MODULE_NOT_FOUND` (with a code) for a package known from
+  the lockfile but not yet downloaded (`DENO_DIR/npm`) or installed (`node_modules/.deno`); the engine falls back to
+  `resolve()` for those as well.
+- `await loader.resolve()` **does not throw** for an unresolvable `jsr:` requirement (no matching version, unknown
+  package or export): it returns the requirement unchanged and records the reason in the graph, which
+  `addEntrypoints([requirement])` returns as a diagnostic. A `jsr:` subpath failure cannot be told from a constraint
+  failure without message text, so it is `RESOLVE_FAILED` (hint picked from the message). `npm:` failures throw
+  "Could not find constraint …" without a code.
+- `addEntrypoints` rejects the whole batch when an entrypoint itself cannot be resolved (unmapped bare specifier); the
+  engine retries one by one. Relative entrypoints and an `undefined` referrer resolve against `process.cwd()`, and
+  referrers other than `file:`/`http(s):` URLs (e.g. `data:`) are read as file paths: the engine passes the project
+  root (and rejects relative specifiers from such referrers).
+- `DENO_DIR` default: `$XDG_CACHE_HOME/deno` on **every** platform, then the OS cache dir (`%USERPROFILE%\AppData\Local`
+  in the wasm build on Windows) + `/deno` (`engine/deno-dir.ts`).
+- The loader returns canonical paths. Files in `node_modules/.deno` are hard links into `DENO_DIR/npm`, and Bun's
+  `realpathSync.native` on macOS may answer with the other link, so the engine realpaths directories and symlinks only.
+- Interface additions: `Engine.dispose()`, `LoadedModule.{kind, url, bytes}` (raw bytes for `bytes`/Wasm),
+  `EngineDiagnostic.code`, `EngineResolveError.isOptionalDependency`. The §2 loader table is `deno bundle`'s and
+  applies to engine output (TypeScript already transpiled), not raw sources.
 
 ---
 

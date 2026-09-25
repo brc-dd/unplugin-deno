@@ -1,0 +1,11 @@
+{
+  "imports": {
+    "config": "./lib/config.ts",
+    "@std/path": "jsr:@std/path@1.0.0"
+  },
+  "scopes": {
+    "./lib/": {
+      "helper": "./lib/helper.ts"
+    }
+  }
+}

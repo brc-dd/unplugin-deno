@@ -7,6 +7,7 @@ import {
   isSubpath,
   normalizeDriveLetter,
   relativeUrlPath,
+  toDirUrl,
   toFileUrl,
   toPath,
 } from './path.js'
@@ -177,5 +178,22 @@ describe('relativeUrlPath', () => {
 
   it('never produces a reference that parses as a scheme', () => {
     expect(relativeUrlPath('file:///m/a.js', 'file:///m/c:x.js')).toBe('./c:x.js')
+  })
+})
+
+describe('toDirUrl', () => {
+  it.each([
+    ['posix', '/home/user/proj', 'file:///home/user/proj/'],
+    ['posix', '/home/user/proj/', 'file:///home/user/proj/'],
+    ['posix', '/', 'file:///'],
+    ['win32', 'C:\\proj\\app', 'file:///C:/proj/app/'],
+    ['win32', 'c:\\proj\\app\\', 'file:///C:/proj/app/'],
+    ['win32', '\\\\server\\share\\dir', 'file://server/share/dir/'],
+  ] as const)('%s: %j -> %s', (flavor, path, expected) => {
+    expect(toDirUrl(path, flavor)).toBe(expected)
+  })
+
+  it('rejects relative paths', () => {
+    expect(() => toDirUrl('relative', 'posix')).toThrow(TypeError)
   })
 })

@@ -1,0 +1,16 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:esm-env@1.2.2": "1.2.2"
+  },
+  "npm": {
+    "esm-env@1.2.2": {
+      "integrity": "sha512-Epxrv+Nr/CaL4ZcFGPJIYLWFom+YeV1DqMLHJoEd9SYRxNbaFruBwfEX/kkHUJf55j2+TUbmDcmuilbP1TmXHA=="
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:esm-env@1.2.2"
+    ]
+  }
+}

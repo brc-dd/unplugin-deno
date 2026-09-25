@@ -3,7 +3,7 @@ import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ParseError } from 'jsonc-parser'
-import { parse, printParseErrorCode } from 'jsonc-parser'
+import { findNodeAtLocation, parse, parseTree, printParseErrorCode } from 'jsonc-parser'
 import type { ErrorCode } from '../diagnostics/errors.js'
 import { DenoPluginError } from '../diagnostics/errors.js'
 
@@ -100,4 +100,54 @@ function lineAndColumn(text: string, offset: number): { line: number; column: nu
   const before = text.slice(0, offset)
   const lines = before.split(/\r\n|\r|\n/)
   return { line: lines.length, column: (lines.at(-1)?.length ?? 0) + 1 }
+}
+
+/**
+ * Parses strict JSON (no comments, no trailing commas), the way Deno reads external import map
+ * files (`serde_json`). A leading byte-order mark is ignored.
+ *
+ * @param file Shown in the error message.
+ * @param code Error code used when parsing fails (default `CONFIG_INVALID`).
+ * @throws {DenoPluginError} With the 1-based line and column of the first syntax error.
+ */
+export function parseJson(text: string, file: string, code: ErrorCode = 'CONFIG_INVALID'): unknown {
+  const source = text.startsWith('\uFEFF') ? text.slice(1) : text
+  const errors: ParseError[] = []
+  const value: unknown = parse(source, errors, {
+    allowTrailingComma: false,
+    disallowComments: true,
+    allowEmptyContent: false,
+  })
+  const [first] = errors
+  if (first) {
+    const { line, column } = lineAndColumn(source, first.offset)
+    throw new DenoPluginError(
+      code,
+      `Cannot parse ${file}: ${printParseErrorCode(first.error)} at ${line}:${column}.`,
+      { hint: `Fix the JSON syntax in ${file} (comments and trailing commas are not allowed).` },
+    )
+  }
+  return value
+}
+
+/** A 1-based position in a text file. */
+export interface TextPosition {
+  line: number
+  column: number
+}
+
+/**
+ * The 1-based position of the value at `path` (object keys and array indices) in JSON(C)
+ * `text`, or `undefined` when the text has no such value. Used to point configuration errors at
+ * the offending value.
+ */
+export function locateJsonValue(
+  text: string,
+  path: ReadonlyArray<string | number>,
+): TextPosition | undefined {
+  const source = text.startsWith('\uFEFF') ? text.slice(1) : text
+  const root = parseTree(source, [], { allowTrailingComma: true, disallowComments: false })
+  if (root === undefined) return undefined
+  const node = path.length === 0 ? root : findNodeAtLocation(root, [...path])
+  return node === undefined ? undefined : lineAndColumn(source, node.offset)
 }
