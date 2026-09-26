@@ -1,6 +1,6 @@
 {
   "name": "unplugin-deno",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Deno's module resolution (jsr:, npm:, https:, deno.json import maps and workspaces, deno.lock) for Vite, Rolldown, Rollup, esbuild, webpack, Rspack and Rsbuild",
   "keywords": [
     "bun",

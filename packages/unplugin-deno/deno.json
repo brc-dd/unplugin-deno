@@ -1,6 +1,6 @@
 {
   "name": "@brc-dd/unplugin-deno",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "license": "MIT",
   "exports": {
     ".": "./dist/index.js",
