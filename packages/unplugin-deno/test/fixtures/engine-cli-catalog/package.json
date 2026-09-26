@@ -1,0 +1,11 @@
+{
+  "name": "engine-cli-catalog",
+  "private": true,
+  "dependencies": {
+    "esm-env": "catalog:"
+  },
+  "catalog": {
+    "esm-env": "1.2.2",
+    "kleur": "4.1.5"
+  }
+}

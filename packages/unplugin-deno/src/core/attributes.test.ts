@@ -36,6 +36,8 @@ describe('isDenoType / langForId', () => {
     ['/a/b.jsx', 'jsx'],
     ['/a/b.js', 'jsx'],
     ['/a/b.vue?vue&type=script', 'jsx'],
+    ['/a/b.vue?vue&type=script&setup=true&lang.ts', 'ts'],
+    ['/a/b.vue?vue&type=script&lang.tsx', 'tsx'],
   ])('%s → %s', (id, lang) => {
     expect(langForId(id)).toBe(lang)
   })

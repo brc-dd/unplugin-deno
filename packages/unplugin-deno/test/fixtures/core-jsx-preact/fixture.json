@@ -1,0 +1,10 @@
+{
+  "title": "JSX per deno.json for local files: compilerOptions.jsx react-jsx with jsxImportSource preact (a specifier the import map maps to npm:preact@^10) becomes the host's JSX options; a .tsx component rendered to HTML with preact-render-to-string",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup", "esbuild", "vite"],
+  "expect": {
+    "values": {
+      "html": "<p class=\"greeting\">Hello, <b>deno</b>!</p><ul><li>1</li><li>2</li></ul>"
+    }
+  }
+}

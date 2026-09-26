@@ -1,0 +1,9 @@
+{
+  "title": "Deno globals in browser bundles: a local module using Deno.cwd() is reported once with its location; Deno in comments, strings, typeof checks and type positions is not",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup", "vite"],
+  "expect": {
+    "values": { "note": "Deno.exit() in a string is not a use", "cwd": "function" },
+    "warning": "src/server-only.ts:3:10 uses `Deno.cwd`"
+  }
+}

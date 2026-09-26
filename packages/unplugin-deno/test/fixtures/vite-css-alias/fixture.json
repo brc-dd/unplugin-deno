@@ -1,0 +1,6 @@
+{
+  "title": "Path-like import-map entries reach Vite's CSS resolver: @import \"@styles/base.css\" (a trailing-slash key) and @import \"@app/theme\" (a file key) through resolve.alias",
+  "entries": ["src/main.ts"],
+  "hosts": ["vite"],
+  "expect": { "css": [".base", ".theme", ".main"] }
+}

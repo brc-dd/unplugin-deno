@@ -2,13 +2,14 @@
  * Rolldown (and tsdown) hooks, placed under unplugin's `rolldown` escape hatch for native typings
  * (docs/architecture.md §6.2): Rust-side filters, `options` for the platform, root and inputs, npm
  * redirects through `this.resolve` (forwarding `moduleSideEffects`), and `moduleType: 'js'` for
- * mirrored and synthesised modules. Import attributes use the generic transform pre-pass.
+ * mirrored and synthesised modules. Import attributes use the generic transform pre-pass; the
+ * `deno.json` JSX settings become `transform.jsx` unless the options set it (§5.11).
  *
  * @module
  */
-import type { Plugin as RolldownPlugin } from 'rolldown'
+import type { InputOptions, Plugin as RolldownPlugin } from 'rolldown'
 import type { PluginState } from '../../core/state.js'
-import { toRollupResult } from '../shared.js'
+import { oxcJsxOptions, toRollupResult } from '../shared.js'
 
 /** The Rolldown-specific hooks of the plugin (merged over the generic ones by unplugin). */
 export function rolldownHooks(state: PluginState): Partial<RolldownPlugin> {
@@ -31,7 +32,7 @@ export function rolldownHooks(state: PluginState): Partial<RolldownPlugin> {
       await state.prepare()
       if (!this.meta.watchMode) resolveFilter.id = state.resolveIdFilter()
       loadFilter.id = state.loadFilter()
-      return null
+      return withJsx(state, inputOptions)
     },
     resolveId: {
       filter: resolveFilter,
@@ -60,5 +61,19 @@ export function rolldownHooks(state: PluginState): Partial<RolldownPlugin> {
       if (this.meta.watchMode) await state.flush()
       else await state.close()
     },
+  }
+}
+
+/**
+ * The input options with the `deno.json` JSX settings as `transform.jsx`, or `null` (no change)
+ * when the options set JSX or the project configures none.
+ */
+function withJsx(state: PluginState, inputOptions: InputOptions): InputOptions | null {
+  if (inputOptions.transform?.jsx !== undefined) return null
+  const decision = state.jsxTransform('Rolldown')
+  if (decision === null) return null
+  return {
+    ...inputOptions,
+    transform: { ...inputOptions.transform, jsx: oxcJsxOptions(decision.transform) },
   }
 }

@@ -105,6 +105,23 @@ function parseMarker(id: string): { base: string; value: string } | null {
   return { base: `${path}${remaining}${hash}`, value }
 }
 
+/** JavaScript and TypeScript extensions, with JSX. */
+const SCRIPT_EXTENSION = /\.[cm]?[jt]sx?$/i
+
+/** A script block of a framework file (`App.vue?vue&type=script&lang.ts`). */
+const SCRIPT_LANG_QUERY = /[?&]lang\.[cm]?[jt]sx?(?:[&#]|$)/i
+
+/**
+ * Whether `id` is a JavaScript or TypeScript module (by its extension, or a `lang.<ext>` query of
+ * a framework's script block), the modules the source transforms read (docs/architecture.md
+ * §5.10); CSS, HTML, framework files and the plugin's synthesised modules are not.
+ */
+export function isScriptModuleId(id: string): boolean {
+  if (isVirtualId(id)) return false
+  const { base, query } = splitQuery(id)
+  return SCRIPT_EXTENSION.test(base) || SCRIPT_LANG_QUERY.test(query)
+}
+
 /** Whether `id` is a virtual module id (Rollup convention: a `\0` prefix). */
 export function isVirtualId(id: string): boolean {
   return id.startsWith('\0')

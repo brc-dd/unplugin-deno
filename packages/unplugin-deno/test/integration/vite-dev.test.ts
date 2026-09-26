@@ -133,7 +133,8 @@ function viteDevSuite(major: 7 | 8): void {
         expect(urls).toContain('/src/icon.svg?import&raw')
         expect(codeOf(codes, '/src/icon.svg?import&raw')).toContain('export default "<svg')
         const text = urls.find((url) => url.startsWith('/@id/__x00__deno:text:'))
-        expect(text).toMatch(/\/src\/message\.txt\.js$/)
+        // Marker ids are relative to the root: no machine path in URLs.
+        expect(text).toBe('/@id/__x00__deno:text:src/message.txt.js')
         expect(codeOf(codes, text)).toContain('export default "hello text\\n"')
         const bytes = urls.find((url) => url.startsWith('/@id/__x00__deno:bytes:'))
         expect(codeOf(codes, bytes)).toContain('new Uint8Array([0,1,2,250,255])')
@@ -294,7 +295,7 @@ function viteDevSuite(major: 7 | 8): void {
       }
       const local = codeOf(
         codes,
-        css.find((url) => url.endsWith('/src/style.css.js')),
+        css.find((url) => url === '/@id/__x00__deno:css:src/style.css.js'),
       )
       expect(local).toContain('color: red')
     })
@@ -313,6 +314,50 @@ function viteDevSuite(major: 7 | 8): void {
         const result = await client(dev).transformRequest(graphUrl(url ?? ''))
         expect(result?.code).toContain('changed text')
       })
+    })
+  })
+
+  describe(`new source features (Vite ${major} dev server)`, () => {
+    it(
+      'compiles local JSX with the deno.json settings through prebundled preact',
+      timeout,
+      async () => {
+        const project = await fixture('core-jsx-preact')
+        const dev = await serve(project.root)
+        const codes = await dev.crawl('/src/main.ts')
+        const page = codes.get('/src/page.tsx') ?? ''
+        // Vite's development runtime, from the import-map-mapped `preact`, prebundled.
+        const runtime = importUrls(page).find((url) => url.includes('jsx-dev-runtime'))
+        expect(runtime).toMatch(/^\/node_modules\/\.vite\/deps\/preact_jsx-dev-runtime\.js/)
+        expect(Object.keys(optimized(dev))).toContain('preact/jsx-dev-runtime')
+      },
+    )
+
+    it('resolves CSS @import of path-like import-map keys', timeout, async () => {
+      const project = await fixture('vite-css-alias')
+      const dev = await serve(project.root)
+      const css = await client(dev).transformRequest('/src/main.css')
+      const selectors = (project.manifest.expect?.css ?? []) as string[]
+      for (const selector of selectors) expect(css?.code).toContain(selector)
+    })
+
+    it('serves .wasm module imports as instantiating modules', timeout, async () => {
+      const project = await fixture('core-wasm')
+      const dev = await serve(project.root)
+      const codes = await dev.crawl('/src/main.ts')
+      expect(codes.get('/src/add.wasm')).toContain('new WebAssembly.Instance(')
+      expect(codes.get('/src/offset.js')).toContain('function offset()')
+    })
+
+    it('reports Deno globals of local modules the browser loads', timeout, async () => {
+      const project = await fixture('core-deno-globals')
+      const dev = await serve(project.root)
+      await dev.crawl('/src/main.ts')
+      const expected = project.manifest.expect as { warning: string }
+      const warnings = dev.logs.filter((log) => log.message.includes('uses `Deno.'))
+      expect(warnings.map((log) => log.message)).toEqual([
+        expect.stringContaining(expected.warning),
+      ])
     })
   })
 

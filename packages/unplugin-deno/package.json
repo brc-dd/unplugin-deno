@@ -82,6 +82,7 @@
   },
   "scripts": {
     "build": "tsdown",
+    "prepare": "tsdown",
     "test": "vitest run",
     "test:deno": "deno run -A npm:vitest run",
     "test:bun": "bun --bun x vitest run",
@@ -101,8 +102,11 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",
+    "@rsbuild/core": "^2.2.9",
+    "@rspack/core": "^2.2.7",
     "@types/node": "^22.20.4",
     "esbuild": "^0.28.2",
+    "esbuild-loader": "^4.5.0",
     "publint": "^0.3.24",
     "rolldown": "^1.2.11",
     "rollup": "^4.63.5",
@@ -110,7 +114,8 @@
     "typescript": "^6.0.3",
     "vite": "^8.3.1",
     "vite7": "npm:vite@^7",
-    "vitest": "^5.0.2"
+    "vitest": "^5.0.2",
+    "webpack": "^5.111.1"
   },
   "peerDependencies": {
     "@farmfe/core": "^1.7.0",

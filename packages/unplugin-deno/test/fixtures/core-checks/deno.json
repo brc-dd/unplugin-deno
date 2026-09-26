@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "nanoid": "npm:nanoid@^5",
+    "nanoid-v3": "npm:nanoid@^3"
+  }
+}

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { denoBinary } from '../../test/helpers/deno-binary.js'
 import { denoDir } from '../../test/helpers/deno-dir.js'
 import { tempProject } from '../../test/helpers/temp-project.js'
 import { isDenoPluginError } from '../diagnostics/errors.js'
@@ -38,15 +39,34 @@ describe('createEngine', () => {
     )
   })
 
-  it('reports the deno engine as unavailable until M2', async () => {
+  it.skipIf(denoBinary.skipReason !== undefined)(
+    `creates deno engines${denoBinary.skipReason === undefined ? '' : ` (skipped: ${denoBinary.skipReason})`}`,
+    async () => {
+      await using temp = await tempProject('engine-no-config')
+      await using engine = await createEngine('deno', {
+        ...(await engineOptions(temp.root)),
+        denoBinary: denoBinary.binary,
+      })
+      expect(engine.kind).toBe('deno')
+      expect((await engine.resolve('./src/main.ts', undefined, 'import')).path).toBe(
+        temp.path('src/main.ts'),
+      )
+    },
+  )
+
+  it('reports the deno engine as unavailable without a Deno binary', async () => {
     await using temp = await tempProject('engine-no-config')
-    const error = await createEngine('deno', await engineOptions(temp.root)).then(
+    const error = await createEngine('deno', {
+      ...(await engineOptions(temp.root)),
+      denoBinary: 'unplugin-deno-test-missing-deno',
+    }).then(
       () => undefined,
       (reason: unknown) => reason,
     )
     expect(isDenoPluginError(error)).toBe(true)
     expect(error).toMatchObject({
       code: 'ENGINE_UNAVAILABLE',
+      message: expect.stringContaining('unplugin-deno-test-missing-deno'),
       hint: expect.stringContaining("engine: 'loader'"),
     })
   })

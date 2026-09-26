@@ -1,0 +1,30 @@
+{
+  "version": "5",
+  "specifiers": {
+    "npm:preact-render-to-string@6": "6.7.0_preact@10.29.8",
+    "npm:preact@10": "10.29.8_preact-render-to-string@6.7.0"
+  },
+  "npm": {
+    "preact-render-to-string@6.7.0_preact@10.29.8": {
+      "integrity": "sha512-Z4WR8fmLMRpdYqJ9i7vrlXSsSrxVJydwrkEXHapexfARbWfGb7vGcnvNQnIzN0cXciMVOlz/XLoiMCi9gUsy9Q==",
+      "dependencies": [
+        "preact"
+      ]
+    },
+    "preact@10.29.8_preact-render-to-string@6.7.0": {
+      "integrity": "sha512-ej2aVZ+vZ8WO7tvlQWRM9N63A0KzF9q4mWJfDUHgYaIofWY9hu74QdnQrjoPMmZi2/nZ5gN0bJCQF49xQqx09Q==",
+      "dependencies": [
+        "preact-render-to-string"
+      ],
+      "optionalPeers": [
+        "preact-render-to-string"
+      ]
+    }
+  },
+  "workspace": {
+    "dependencies": [
+      "npm:preact-render-to-string@6",
+      "npm:preact@10"
+    ]
+  }
+}

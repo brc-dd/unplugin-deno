@@ -41,7 +41,7 @@ export type ResolutionMode = 'import' | 'require'
 /** How a module is loaded: as code, or as the target of `with { type: "json" | "text" | "bytes" }`. */
 export type LoadType = 'default' | 'json' | 'text' | 'bytes'
 
-/** The engine implementations: the vendored `@deno/loader` and the Deno CLI (M2). */
+/** The engine implementations: the vendored `@deno/loader` and the installed Deno CLI. */
 export type EngineKind = 'loader' | 'deno'
 
 /**
@@ -174,11 +174,22 @@ export interface EngineCreateOptions {
   conditions: string[]
   /** Never download; modules that are not in the Deno cache fail with `CACHED_ONLY_MISS`. */
   cachedOnly: boolean
-  /** Ignore package versions published after this date (minimum dependency age). */
+  /**
+   * Ignore package versions published after this date (minimum dependency age). The `deno` engine
+   * ignores it: Deno applies `minimumDependencyAge` (config, `.npmrc`, its 24 h default) itself.
+   */
   newestDependencyDate?: Date
   logger: Logger
-  /** Fetch used for downloads (proxies, auth, tests). Default: `globalThis.fetch` at call time. */
+  /**
+   * Fetch used for downloads (proxies, auth, tests). Default: `globalThis.fetch` at call time.
+   * The `deno` engine ignores it: the Deno CLI downloads by itself.
+   */
   fetch?: typeof fetch
+  /**
+   * The Deno executable of the `deno` engine: a command on `PATH` or a path (default `deno`).
+   * Ignored by the `loader` engine.
+   */
+  denoBinary?: string | undefined
 }
 
 /** Deno's resolution and loading, behind one interface for every engine implementation. */

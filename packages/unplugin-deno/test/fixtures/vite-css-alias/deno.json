@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@styles/": "./src/styles/",
+    "@app/theme": "./src/theme.css"
+  }
+}

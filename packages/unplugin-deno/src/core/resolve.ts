@@ -15,6 +15,7 @@ import { isOptionalDependencyError } from '../engine/errors.js'
 import type { Engine, ResolutionMode, ResolvedModule } from '../engine/types.js'
 import type { PathFlavor } from '../utils/path.js'
 import { HOST_PATH_FLAVOR, toFileUrl, toPath } from '../utils/path.js'
+import { displayModule, nativeAddonMessage, nodeBuiltinMessage } from './checks.js'
 import type { DenoType } from './id.js'
 import {
   EMPTY_MODULE_ID,
@@ -33,7 +34,7 @@ import { pinExternalsFor } from './options.js'
 import type { ExternalOutcome } from './platform.js'
 import { externalOutcomeFor, isExternal, matchPattern } from './platform.js'
 import type { ParsedSpecifier } from './specifier.js'
-import { parseSpecifier } from './specifier.js'
+import { parseNpmSpecifier, parseSpecifier } from './specifier.js'
 
 /** A file in the mirror that the plugin loads (code and source map). */
 export interface MirrorOutcome {
@@ -129,6 +130,10 @@ export interface ResolverState {
   /** The engine for the build's platform (created on first use). */
   engine(): Promise<Engine>
   readonly flavor?: PathFlavor
+  /** Logs a warning once per `key` (browser-safety checks, §5.10). */
+  warnOnce?(key: string, message: string): void
+  /** Records an npm package bundled for `platform` (the duplicate-version check, X4). */
+  recordNpmPackage?(platform: Platform, name: string, version: string): void
 }
 
 /** Resolves owned ids; see {@link createResolver}. */
@@ -298,7 +303,10 @@ async function resolveSpecifier(step: Step, id: string): Promise<ResolveOutcome>
   }
 
   // 2. Externals policy, before the engine (§5.6).
-  if (spec.kind === 'node' && state.platform === 'browser') return null
+  if (spec.kind === 'node' && state.platform === 'browser') {
+    reportNodeBuiltin(step, spec.base)
+    return null
+  }
   if (isExternal(spec, state.options, state.platform, spellings)) {
     const pin =
       (spec.kind === 'npm' || spec.kind === 'jsr') && pinExternalsFor(state.options, state.platform)
@@ -398,6 +406,21 @@ async function relativeImport(
   return hostMarker(`${spec.base}${query}`, step.denoType)
 }
 
+/**
+ * Warns (once per import) that a local or remote module of a browser bundle imports a `node:`
+ * builtin, naming the importer (X3). Imports inside npm packages are the package's business.
+ */
+function reportNodeBuiltin(step: Step, specifier: string): void {
+  const { state, context } = step
+  if (!state.options.checks.browserSafety || state.warnOnce === undefined) return
+  if (context.kind !== 'local' && context.kind !== 'mirror') return
+  const importer =
+    context.kind === 'mirror'
+      ? (step.referrer ?? context.path)
+      : displayModule(context.path, state.options.cwd)
+  state.warnOnce(`node-builtin\0${importer}\0${specifier}`, nodeBuiltinMessage(importer, specifier))
+}
+
 /** `null`, or the host-resolved marker when the import carries a `deno-type`. */
 function hostMarker(request: string, denoType: DenoType | undefined): ResolveOutcome {
   return denoType === undefined ? null : { type: 'host-marker', request, denoType }
@@ -437,6 +460,17 @@ async function outcomeOf(
           denoType,
           resolved.url,
         )
+      }
+      const file = resolved.path ?? resolved.url
+      if (/\.node$/i.test(file)) {
+        // A native addon cannot be bundled: keep the import for the runtime to load (S5).
+        if (state.options.checks.browserSafety) {
+          state.warnOnce?.(`native-addon\0${file}`, nativeAddonMessage(specifier, file))
+        }
+        return { type: 'external', id: specifier }
+      }
+      if (resolved.npm !== undefined) {
+        state.recordNpmPackage?.(state.platform, resolved.npm.name, resolved.npm.version)
       }
       return npmOutcome(resolved, specifier, {
         strategy: state.npmStrategy,
@@ -480,8 +514,27 @@ async function engineResolve(
       return 'optional'
     }
     if (fallback !== undefined && isDenoPluginError(error)) return fallback
-    throw error
+    throw withInstallHint(step.state, specifier, error)
   }
+}
+
+/**
+ * With `nodeModulesDir: "manual"` the project installs npm packages itself: an `npm:` specifier
+ * whose package is not a `package.json` dependency can only be found after adding it there (or
+ * moving it to Deno-managed npm resolution), which the hint says instead of the engine's
+ * "install it" hint.
+ */
+function withInstallHint(state: ResolverState, specifier: string, error: unknown): unknown {
+  if (!isDenoPluginError(error) || error.code !== 'RESOLVE_NOT_FOUND') return error
+  if (state.project.nodeModules.mode !== 'manual') return error
+  const npm = parseNpmSpecifier(specifier)
+  if (npm === null || packageJsonDependencyNames(state.project).includes(npm.name)) return error
+  return new DenoPluginError(error.code, error.message, {
+    hint: `${npm.name} is not a dependency in package.json, and with "nodeModulesDir": "manual" Deno installs no npm packages: add it to package.json and run your package manager, or move it to deno.json \`imports\` with "nodeModulesDir": "auto" or "none".`,
+    specifier: error.specifier ?? specifier,
+    importer: error.importer,
+    cause: error,
+  })
 }
 
 function importMapResolve(

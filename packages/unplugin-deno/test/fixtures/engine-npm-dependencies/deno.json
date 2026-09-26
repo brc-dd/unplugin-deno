@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "debug": "npm:debug@4.4.3"
+  }
+}

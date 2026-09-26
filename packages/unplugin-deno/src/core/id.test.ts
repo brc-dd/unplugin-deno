@@ -8,6 +8,7 @@ import {
   isForeignId,
   isMirrorPath,
   isOwnedSpecifier,
+  isScriptModuleId,
   isVirtualId,
   pathPrefixFilter,
   readDenoType,
@@ -15,6 +16,38 @@ import {
   stripDenoType,
   withDenoType,
 } from './id.js'
+
+describe('isScriptModuleId', () => {
+  it('accepts JavaScript and TypeScript modules and framework script blocks', () => {
+    for (const id of [
+      '/p/a.ts',
+      '/p/a.tsx',
+      '/p/a.mjs',
+      '/p/a.cts',
+      'C:\\p\\A.JSX',
+      '/p/deps/x.js?v=1234',
+      '/p/App.vue?vue&type=script&setup=true&lang.ts',
+      '/p/App.svelte?svelte&type=script&lang.js',
+    ]) {
+      expect(isScriptModuleId(id)).toBe(true)
+    }
+  })
+
+  it('refuses styles, markup, framework files, assets and virtual ids', () => {
+    for (const id of [
+      '/p/a.css',
+      '/p/index.html',
+      '/p/App.vue',
+      '/p/App.vue?vue&type=style&index=0&lang.css',
+      '/p/add.wasm',
+      '/p/data.txt?deno-type=text',
+      '\0virtual:x.ts',
+      '/p/a.ts.map',
+    ]) {
+      expect(isScriptModuleId(id)).toBe(false)
+    }
+  })
+})
 
 describe('splitQuery', () => {
   it.each([

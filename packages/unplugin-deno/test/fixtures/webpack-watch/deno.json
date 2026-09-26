@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "greeting": "./src/hello.ts"
+  }
+}

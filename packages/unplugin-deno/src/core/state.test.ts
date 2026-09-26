@@ -146,12 +146,13 @@ describe('PluginState hooks', () => {
         mappings: 'AAAA',
       }),
     )
+    // Rollup-family hosts get the source next to the mirror file (they resolve URLs as paths).
     expect(await plugin.load(file)).toEqual({
       code: 'export const x = 1;',
       map: {
         version: 3,
         file: 'mod.ts.js',
-        sources: ['https://x.test/mod.ts'],
+        sources: ['mod.ts'],
         sourcesContent: ['export const x: number = 1'],
         names: [],
         mappings: 'AAAA',
@@ -161,6 +162,40 @@ describe('PluginState hooks', () => {
     const asset = join(plugin.mirror.root, 'https', 'x.test', 'data.json')
     await writeFile(asset, '{}')
     expect(await plugin.load(asset)).toBeNull()
+  })
+
+  it('loads .wasm modules as instantiating modules, local and mirrored, unless disabled', async () => {
+    // (module (func (export "one") (result i32) i32.const 1))
+    const wasm = Uint8Array.from([
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,
+      0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x6f, 0x6e, 0x65, 0x00, 0x00, 0x0a, 0x06,
+      0x01, 0x04, 0x00, 0x41, 0x01, 0x0b,
+    ])
+    const { state: plugin, path } = await state({ 'deno.json': {} })
+    await plugin.prepare()
+    expect(plugin.loadFilter().some((filter) => filter.test(path('src/one.wasm')))).toBe(true)
+    await mkdir(path('src'), { recursive: true })
+    await writeFile(path('src/one.wasm'), wasm)
+    const local = await plugin.load(path('src/one.wasm'))
+    expect(local?.moduleType).toBe('js')
+    expect(local?.code).toContain('export const one = __wasm_instance.exports["one"];')
+    const mirrored = join(plugin.mirror.root, 'https', 'x.test', 'one.wasm')
+    await mkdir(dirname(mirrored), { recursive: true })
+    await writeFile(mirrored, wasm)
+    expect((await plugin.load(mirrored))?.code).toContain('new WebAssembly.Instance(')
+    // Queries (`?init`, `?url`) and attributes are the host's or the markers'.
+    expect(await plugin.load(`${path('src/one.wasm')}?init`)).toBeNull()
+    await expect(plugin.load(path('src/missing.wasm'))).rejects.toMatchObject({
+      code: 'RESOLVE_NOT_FOUND',
+    })
+    const off = await state({ 'deno.json': {} }, { wasm: false })
+    await off.state.prepare()
+    await mkdir(off.path('src'), { recursive: true })
+    await writeFile(off.path('src/one.wasm'), wasm)
+    expect(await off.state.load(off.path('src/one.wasm'))).toBeNull()
+    expect(off.state.loadFilter().some((filter) => filter.test(off.path('src/one.wasm')))).toBe(
+      false,
+    )
   })
 
   it('runs the attribute pre-pass on local code only, unless disabled', async () => {
@@ -177,6 +212,144 @@ describe('PluginState hooks', () => {
     const disabled = await state({ 'deno.json': {} }, { importAttributes: false })
     await disabled.state.prepare()
     expect(await disabled.state.transform(code, disabled.path('src/main.ts'))).toBeNull()
+  })
+
+  it('replaces import.meta.main outside entries, also in mirror and npm files', async () => {
+    const code = 'export const main = import.meta.main\n'
+    const { state: plugin, path } = await state({ 'deno.json': {} })
+    await plugin.prepare()
+    const lib = await plugin.transform(code, path('src/lib.ts'), { isEntry: () => false })
+    expect(lib?.code).toBe('export const main = false\n')
+    expect(lib?.map?.sources).toEqual([path('src/lib.ts')])
+    expect(await plugin.transform(code, path('src/main.ts'), { isEntry: () => true })).toBeNull()
+    const mirrored = join(plugin.mirror.root, 'https', 'x.test', 'cli.ts.js')
+    expect((await plugin.transform(code, mirrored))?.code).toBe('export const main = false\n')
+    const npm = path('node_modules/pkg/index.js')
+    expect((await plugin.transform(code, npm))?.code).toBe('export const main = false\n')
+    // Vite's dev server serves modules unbundled; only scripts are read.
+    expect(await plugin.transform(code, path('src/lib.ts'), { importMetaMain: false })).toBeNull()
+    expect(await plugin.transform(code, path('src/style.css'))).toBeNull()
+    const off = await state({ 'deno.json': {} }, { importMetaMain: false })
+    await off.state.prepare()
+    expect(await off.state.transform(code, off.path('src/lib.ts'))).toBeNull()
+  })
+
+  it('inlines allowed variables for the browser platform, from .env files and the process', async () => {
+    vi.stubEnv('PUBLIC_FROM_PROCESS', 'process value')
+    const code =
+      'export const a = Deno.env.get("PUBLIC_A")\n' +
+      'export const b = process.env.PUBLIC_FROM_PROCESS\n' +
+      'export const c = process.env["PUBLIC_MISSING"]\n' +
+      'export const secret = () => Deno.env.get("SECRET")\n'
+    const { state: plugin, path } = await state(
+      { 'deno.json': {}, '.env': 'PUBLIC_A=from .env\nSECRET=hidden\n' },
+      { env: { prefix: 'PUBLIC_' }, denoGlobals: 'off' },
+    )
+    plugin.setHints({ platform: 'browser' })
+    await plugin.prepare()
+    const result = await plugin.transform(code, path('src/main.ts'))
+    expect(result?.code).toBe(
+      'export const a = "from .env"\n' +
+        'export const b = "process value"\n' +
+        'export const c = undefined\n' +
+        'export const secret = () => Deno.env.get("SECRET")\n',
+    )
+    // Server platforms keep their reads unless `env.server` is set; npm packages are left alone.
+    expect(await plugin.transform(code, path('src/main.ts'), { platform: 'deno' })).toBeNull()
+    expect(await plugin.transform(code, path('node_modules/pkg/index.js'))).toBeNull()
+    const server = await state(
+      { 'deno.json': {}, 'app.env': 'PUBLIC_A=server\n' },
+      { env: { prefix: ['PUBLIC_'], files: ['app.env'], server: true } },
+    )
+    await server.state.prepare()
+    expect(server.state.platform).toBe('deno')
+    expect((await server.state.transform(code, server.path('src/main.ts')))?.code).toContain(
+      'export const a = "server"',
+    )
+  })
+
+  it('reports Deno globals of local browser modules once per file, or fails with error', async () => {
+    const code = '// Deno.exit()\nexport const cwd = () => Deno.cwd()\nexport const x = Deno.pid\n'
+    const warnings: string[] = []
+    const { state: plugin, path } = await state({ 'deno.json': {} })
+    plugin.setHints({ platform: 'browser' })
+    await plugin.prepare()
+    plugin.setLogTarget({ warn: (message) => warnings.push(message) })
+    expect(await plugin.transform(code, path('src/main.ts'))).toBeNull()
+    expect(await plugin.transform(code, path('src/main.ts'))).toBeNull()
+    expect(warnings).toEqual([
+      expect.stringMatching(/^src\/main\.ts:2:26 uses `Deno\.cwd`, `Deno\.pid`/),
+    ])
+    // Mirror and npm files, and other platforms, are not checked.
+    await plugin.transform(code, join(plugin.mirror.root, 'https', 'x.test', 'a.ts.js'))
+    await plugin.transform(code, path('node_modules/pkg/index.js'))
+    await plugin.transform(code, path('src/server.ts'), { platform: 'deno' })
+    expect(warnings).toHaveLength(1)
+    const strict = await state({ 'deno.json': {} }, { denoGlobals: 'error' })
+    strict.state.setHints({ platform: 'browser' })
+    await strict.state.prepare()
+    await expect(strict.state.transform(code, strict.path('src/main.ts'))).rejects.toMatchObject({
+      name: 'DenoPluginError',
+      code: 'PLATFORM_INCOMPATIBLE',
+    })
+    // Inlined env reads do not count.
+    const inlined = await state({ 'deno.json': {} }, { env: { prefix: 'PUBLIC_' } })
+    inlined.state.setHints({ platform: 'browser' })
+    await inlined.state.prepare()
+    const envWarnings: string[] = []
+    inlined.state.setLogTarget({ warn: (message) => envWarnings.push(message) })
+    await inlined.state.transform(
+      'export const a = Deno.env.get("PUBLIC_A")\n',
+      inlined.path('a.ts'),
+    )
+    expect(envWarnings).toEqual([])
+  })
+
+  it('warns once when Deno manages a node_modules another package manager installed', async () => {
+    const warnings: string[] = []
+    const { state: plugin } = await state({
+      'deno.json': { nodeModulesDir: 'auto' },
+      'package.json': { dependencies: { kleur: '^4' } },
+      'node_modules/.modules.yaml': 'layoutVersion: 5\n',
+    })
+    plugin.setLogTarget({ warn: (message) => warnings.push(message) })
+    await plugin.prepare()
+    await plugin.watchChange(plugin.project.configPath ?? '')
+    expect(warnings).toEqual([expect.stringContaining('was installed by pnpm')])
+  })
+
+  it('reports npm packages bundled in several versions at the end of a build', async () => {
+    const warnings: string[] = []
+    const { state: plugin } = await state({ 'deno.json': {} })
+    plugin.setLogTarget({ warn: (message) => warnings.push(message) })
+    plugin.recordNpmPackage('browser', 'kleur', '3.0.3')
+    plugin.recordNpmPackage('browser', 'kleur', '4.1.5')
+    plugin.reportDuplicates()
+    plugin.reportDuplicates()
+    expect(warnings).toEqual([expect.stringContaining('kleur is bundled in 2 versions')])
+    const off = await state({ 'deno.json': {} }, { checks: { duplicates: false } })
+    off.state.recordNpmPackage('browser', 'kleur', '3.0.3')
+    off.state.recordNpmPackage('browser', 'kleur', '4.1.5')
+    const offWarnings: string[] = []
+    off.state.setLogTarget({ warn: (message) => offWarnings.push(message) })
+    off.state.reportDuplicates()
+    expect(offWarnings).toEqual([])
+  })
+
+  it('decides the JSX transform once the project is loaded and warns once for precompile', async () => {
+    const warnings: string[] = []
+    const { state: plugin } = await state({
+      'deno.json': { compilerOptions: { jsx: 'precompile', jsxImportSource: 'preact' } },
+    })
+    plugin.setLogTarget({ warn: (message) => warnings.push(message) })
+    await plugin.prepare()
+    expect(plugin.jsxTransform('Rolldown')?.transform).toEqual({
+      runtime: 'automatic',
+      importSource: 'preact',
+      development: false,
+    })
+    plugin.jsxTransform('Rolldown')
+    expect(warnings).toEqual([expect.stringContaining('"precompile"')])
   })
 
   it('reloads the project when a watched file changes', async () => {

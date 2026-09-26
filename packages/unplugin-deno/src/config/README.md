@@ -11,7 +11,8 @@ the specifier parsers), `engine/` or `hosts/`.
 - `package-json.ts`: `package.json` reading, dependency classification, catalogs.
 - `discover.ts`: `discoverProject`: nearest config folder, workspace root and members (globs),
   `links` (and automatic links), external import maps, warnings, watched files.
-- `node-modules.ts`: `detectNodeModules`: the `nodeModulesDir` mode and the `node_modules` layout.
+- `node-modules.ts`: `detectNodeModules`: the `nodeModulesDir` mode, the `node_modules` layout,
+  and the markers of another package manager (pnpm, npm, Yarn) in it.
 - `import-map.ts`: the WICG import-map algorithm with Deno's deviations and package expansion, and
   `createImportMapResolver` for workspaces (member/link scopes and packages, package.json
   dependencies).

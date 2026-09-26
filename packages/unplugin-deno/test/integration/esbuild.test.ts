@@ -6,7 +6,7 @@
  * plugin instances shared by several builds.
  */
 import { execFile } from 'node:child_process'
-import { copyFile, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -20,7 +20,7 @@ import type {
   PluginBuild,
 } from 'esbuild'
 import { build as esbuildBuild, context as esbuildContext } from 'esbuild'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Options } from '../../src/core/options.js'
 import denoEsbuild from '../../src/esbuild.js'
 import { evaluateModule, installCssStyleSheet } from '../helpers/build.js'
@@ -34,7 +34,13 @@ import {
   esbuildOptions,
 } from '../helpers/esbuild.js'
 import type { TempProject } from '../helpers/temp-project.js'
-import { DENO_AVAILABLE, fixture } from './core-suite.js'
+import {
+  containsAbsolutePath,
+  DENO_AVAILABLE,
+  fixture,
+  importMetaMainCount,
+  warningsWith,
+} from './core-suite.js'
 
 const execFileAsync = promisify(execFile)
 const timeout = { timeout: 180_000 }
@@ -239,11 +245,17 @@ describe('the esbuild plugin', () => {
     const result = await esbuildBuild(options)
     expect(result.errors).toEqual([])
     expect(seen).toEqual(['./message.txt?raw'])
-    // No catch-all outside the plugin's own namespace; no onLoad for files at all.
+    // No catch-all outside the plugin's own namespace; no onLoad for files except `.wasm` modules
+    // and mirror files (those containing import.meta.main, which esbuild cannot transform).
     for (const registration of registrations) {
       if (registration.namespace === 'unplugin-deno') continue
       expect(registration.filter.source).not.toBe('.*')
-      expect(registration.hook).toBe('onResolve')
+      if (registration.hook === 'onResolve') continue
+      expect(registration.filter.test(project.path('src/main.ts'))).toBe(false)
+      expect(
+        registration.filter.test(project.path('node_modules/.unplugin-deno/x/a.js')) ||
+          registration.filter.test(project.path('src/add.wasm')),
+      ).toBe(true)
     }
     const main = registrations[0]?.filter
     expect(main?.test('jsr:@std/path')).toBe(true)
@@ -339,6 +351,45 @@ describe('the esbuild plugin', () => {
     expect(fixed.errors).toEqual([])
     const main = fixed.outputFiles?.find((file) => file.path.endsWith('main.js'))
     expect(main?.text).toContain('"hello"')
+  })
+})
+
+describe('diagnostics (esbuild)', () => {
+  it(
+    'explains npm: packages missing from package.json with nodeModulesDir manual',
+    timeout,
+    async () => {
+      const project = await fixture('core-basic')
+      await writeFile(project.path('deno.json'), '{ "nodeModulesDir": "manual" }\n')
+      await writeFile(project.path('package.json'), '{ "name": "app" }\n')
+      await writeFile(project.path('src/missing.ts'), "export { default } from 'npm:kleur@^4'\n")
+      const options = await prepare(project.root, 'src/missing.ts', {}, { write: false })
+      const failure = await buildFailure(esbuildBuild(options))
+      const [error] = failure.errors
+      expect(error?.detail).toMatchObject({ code: 'RESOLVE_NOT_FOUND' })
+      expect(error?.notes.map((note) => note.text)).toEqual([
+        expect.stringMatching(/^hint: kleur is not a dependency in package\.json/),
+      ])
+    },
+  )
+
+  it('warns when Deno manages a node_modules pnpm installed', timeout, async () => {
+    const project = await fixture('core-basic')
+    const config = JSON.parse(await readFile(project.path('deno.json'), 'utf8')) as object
+    await writeFile(
+      project.path('deno.json'),
+      JSON.stringify({ ...config, nodeModulesDir: 'auto' }),
+    )
+    await mkdir(project.path('node_modules'), { recursive: true })
+    await writeFile(project.path('node_modules/.modules.yaml'), 'layoutVersion: 5\n')
+    const seen: string[] = []
+    const out = await bundle(
+      project.root,
+      project.manifest.entries,
+      { platform: 'node' },
+      { platform: 'node', plugins: [rawQueryPlugin(seen)] },
+    )
+    expect(warningsWith(out, 'was installed by pnpm')).toHaveLength(1)
   })
 })
 
@@ -553,6 +604,7 @@ describe('core-attributes (esbuild)', () => {
       })
       for (const chunk of out.chunks) {
         expect(chunk.code).not.toMatch(/type:\s*["'](?:text|bytes|css)["']/)
+        expect(containsAbsolutePath(chunk.code, project.root)).toBe(false)
       }
       const inputs = Object.keys(out.metafile.inputs)
       // Local text and bytes are esbuild's own loaders; local css and remote targets are markers,
@@ -575,6 +627,143 @@ describe('core-attributes (esbuild)', () => {
       expect((await readFile(license, 'utf8')).startsWith('The MIT License')).toBe(true)
     },
   )
+})
+
+describe('core-jsx-preact (esbuild)', () => {
+  it('compiles local JSX with the deno.json settings (react-jsx, preact)', timeout, async () => {
+    const project = await fixture('core-jsx-preact')
+    const out = await bundle(project.root, project.manifest.entries)
+    const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+    expect(values).toEqual(expectedValues(project))
+    const inputs = slashed(Object.keys(out.metafile.inputs))
+    expect(inputs.some((input) => input.includes('/preact/10.29.8/jsx-runtime/dist/'))).toBe(true)
+  })
+
+  it('follows react-jsxdev, the classic runtime and precompile', timeout, async () => {
+    const project = await fixture('core-jsx-preact')
+    const config = JSON.parse(await readFile(project.path('deno.json'), 'utf8')) as object
+    const variants = [
+      [{ jsx: 'react-jsxdev', jsxImportSource: 'preact' }, true, true],
+      [{ jsx: 'react', jsxFactory: 'h', jsxFragmentFactory: 'Fragment' }, false, false],
+      [{ jsx: 'precompile', jsxImportSource: 'preact' }, true, false],
+    ] as const
+    for (const [compilerOptions, runtime, development] of variants) {
+      await writeFile(project.path('deno.json'), JSON.stringify({ ...config, compilerOptions }))
+      const out = await bundle(project.root, project.manifest.entries)
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      const inputs = slashed(Object.keys(out.metafile.inputs))
+      expect(inputs.some((input) => input.includes('/preact/10.29.8/jsx-runtime/'))).toBe(runtime)
+      expect(entryChunk(out).code.includes('lineNumber')).toBe(development)
+      expect(warningsWith(out, '"precompile"')).toHaveLength(
+        compilerOptions.jsx === 'precompile' ? 1 : 0,
+      )
+    }
+  })
+
+  it('leaves JSX the build options set', timeout, async () => {
+    const project = await fixture('core-jsx-preact')
+    const out = await bundle(
+      project.root,
+      project.manifest.entries,
+      {},
+      { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment' },
+    )
+    const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+    expect(values).toEqual(expectedValues(project))
+    const inputs = slashed(Object.keys(out.metafile.inputs))
+    expect(inputs.some((input) => input.includes('/jsx-runtime/'))).toBe(false)
+  })
+})
+
+describe('core-import-meta-main (esbuild)', () => {
+  it(
+    'replaces import.meta.main in mirror files esbuild bundles into the entry',
+    timeout,
+    async () => {
+      const project = await fixture('core-import-meta-main')
+      const out = await bundle(project.root, project.manifest.entries)
+      const { values } = await evaluateModule<{ values: { remoteMain: unknown } }>(out.entry)
+      expect(values.remoteMain).toBe(false)
+      // esbuild has no transform hook: local files keep theirs (the entry's and lib.ts's).
+      expect(importMetaMainCount(entryChunk(out).code)).toBe(2)
+      // The mirror file's source map survives the edit.
+      const map = JSON.parse(await readFile(`${out.entry}.map`, 'utf8')) as { sources: string[] }
+      expect(map.sources).toContain('data:text/javascript,export default import.meta.main')
+      const kept = await bundle(project.root, project.manifest.entries, { importMetaMain: false })
+      expect(importMetaMainCount(entryChunk(kept).code)).toBe(3)
+    },
+  )
+})
+
+describe('core-env-inline (esbuild)', () => {
+  it('defines the allowed process.env variables for the browser', timeout, async () => {
+    const project = await fixture('core-env-inline')
+    const files = project.manifest.expect?.files as Record<string, string>
+    for (const [name, text] of Object.entries(files)) await writeFile(project.path(name), text)
+    vi.stubEnv('PUBLIC_TARGET', 'from the process')
+    const out = await bundle(project.root, project.manifest.entries, {
+      env: { prefix: 'PUBLIC_' },
+      denoGlobals: 'off',
+    })
+    const { code } = entryChunk(out)
+    expect(code).toContain('target: "from the process"')
+    expect(code).toContain('bracket: "hello from .env"')
+    expect(code).not.toContain('process.env.PUBLIC_TARGET')
+    // esbuild has no transform hook: `Deno.env.get()` is read at runtime.
+    expect(code).toContain('Deno.env.get("PUBLIC_GREETING")')
+    const server = await bundle(
+      project.root,
+      project.manifest.entries,
+      { env: { prefix: 'PUBLIC_' } },
+      { platform: 'node' },
+    )
+    expect(entryChunk(server).code).toContain('process.env.PUBLIC_TARGET')
+  })
+})
+
+describe('core-checks (esbuild)', () => {
+  it(
+    'warns about node: builtins in browser bundles and npm packages in two versions',
+    timeout,
+    async () => {
+      const project = await fixture('core-checks')
+      const expected = project.manifest.expect as { builtin: string; duplicate: string }
+      const nodeExternal: Plugin = {
+        name: 'test-node-external',
+        setup(build) {
+          build.onResolve({ filter: /^node:/ }, (args) => ({ path: args.path, external: true }))
+        },
+      }
+      const out = await bundle(
+        project.root,
+        project.manifest.entries,
+        {},
+        { plugins: [nodeExternal] },
+      )
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      expect(warningsWith(out, expected.builtin)).toHaveLength(1)
+      expect(warningsWith(out, expected.duplicate)).toEqual([
+        expect.stringContaining('(3.3.19, 5.1.16)'),
+      ])
+    },
+  )
+})
+
+describe('core-wasm (esbuild)', () => {
+  it('instantiates .wasm module imports like Deno, with their own imports', timeout, async () => {
+    const project = await fixture('core-wasm')
+    const out = await bundle(project.root, project.manifest.entries)
+    const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+    expect(values).toEqual(expectedValues(project))
+    expect(entryChunk(out).code).toContain('new WebAssembly.Instance(')
+    // A loader for .wasm in the build options leaves .wasm files to esbuild.
+    const failure = await buildFailure(
+      bundle(project.root, project.manifest.entries, {}, { loader: { '.wasm': 'binary' } }),
+    )
+    expect(failure.errors.map((error) => error.text).join('\n')).toContain('add')
+  })
 })
 
 describe('core-platform-deno (esbuild)', () => {
@@ -641,7 +830,7 @@ describe('core-platform-deno (esbuild)', () => {
   it('bundles what `bundle` names and keeps ranges with pinExternals: false', timeout, async () => {
     const project = await fixture('core-platform-deno')
     const bundled = await bundle(project.root, entries, { platform: 'deno', bundle: ['npm:kleur'] })
-    expect(entryChunk(bundled).imports.toSorted()).toEqual(['jsr:@std/path@1.1.6', 'node:fs'])
+    expect(entryChunk(bundled).imports.toSorted()).toEqual(['jsr:@std/path@1.1.6/posix', 'node:fs'])
     expect(slashed(entryChunk(bundled).moduleIds).some((id) => id.includes('/kleur/'))).toBe(true)
     const ranges = await bundle(project.root, entries, { platform: 'deno', pinExternals: false })
     const expected = project.manifest.expect as { ranges: string[] }

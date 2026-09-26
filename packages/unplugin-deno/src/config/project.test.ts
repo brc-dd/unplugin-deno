@@ -180,7 +180,14 @@ describe('loadProject', () => {
         exclude: [],
         source: 'default',
       },
-      nodeModules: { mode: 'none', explicit: false, dir: null, layout: null, hasJsrDeps: false },
+      nodeModules: {
+        mode: 'none',
+        explicit: false,
+        dir: null,
+        layout: null,
+        hasJsrDeps: false,
+        foreignManager: null,
+      },
     })
     // The lockfile is watched even before it exists, so `deno install` creating it is noticed.
     expect(project.watchFiles).toEqual([dir.path('deno.json'), dir.path('deno.lock')])

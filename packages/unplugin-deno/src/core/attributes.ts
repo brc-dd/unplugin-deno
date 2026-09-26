@@ -46,9 +46,15 @@ export function isDenoType(value: unknown): value is DenoType {
   return typeof value === 'string' && DENO_TYPES.has(value)
 }
 
-/** The parser language for a module id, from its extension (JavaScript files may contain JSX). */
+/**
+ * The parser language for a module id, from its extension or the `lang.<ext>` query of a
+ * framework's script block (JavaScript files may contain JSX).
+ */
 export function langForId(id: string): AstLang {
-  const extension = /\.([cm]?[jt]sx?)$/i.exec(splitQuery(id).base)?.[1]?.toLowerCase()
+  const { base, query } = splitQuery(id)
+  const extension = (
+    /\.([cm]?[jt]sx?)$/i.exec(base)?.[1] ?? /[?&]lang\.([cm]?[jt]sx?)(?:[&#]|$)/i.exec(query)?.[1]
+  )?.toLowerCase()
   switch (extension) {
     case 'tsx':
       return 'tsx'
@@ -92,10 +98,25 @@ export function transformImportAttributes(
   id: string,
   parse?: AstParser,
 ): AttributeTransform | null {
-  if (!code.includes('with')) return null
-  const imports = scanImports(code, id, parse)
-  if (imports === null) return null
   const magic = new MagicString(code)
+  if (!applyImportAttributes(magic, code, id, parse)) return null
+  const map = magic.generateMap({ source: id, hires: 'boundary', includeContent: true })
+  return { code: magic.toString(), map: { ...map, version: 3 } as EncodedSourceMap }
+}
+
+/**
+ * {@link transformImportAttributes} on a `MagicString` of `code` that other transforms edit too
+ * (their ranges never overlap import specifiers). Returns whether it changed anything.
+ */
+export function applyImportAttributes(
+  magic: MagicString,
+  code: string,
+  id: string,
+  parse?: AstParser,
+): boolean {
+  if (!code.includes('with')) return false
+  const imports = scanImports(code, id, parse)
+  if (imports === null) return false
   let changed = false
   for (const entry of imports) {
     const type = entry.attributes?.type
@@ -105,9 +126,7 @@ export function transformImportAttributes(
     if (entry.clause.end > entry.clause.start) magic.remove(entry.clause.start, entry.clause.end)
     changed = true
   }
-  if (!changed) return null
-  const map = magic.generateMap({ source: id, hires: 'boundary', includeContent: true })
-  return { code: magic.toString(), map: { ...map, version: 3 } as EncodedSourceMap }
+  return changed
 }
 
 /**

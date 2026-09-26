@@ -1,0 +1,6 @@
+@import '@styles/base.css';
+@import '@app/theme';
+
+.main {
+  color: blue;
+}

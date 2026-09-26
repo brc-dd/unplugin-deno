@@ -1,0 +1,9 @@
+@import url('https://fonts.googleapis.com/css2?family=Roboto');
+
+.bg {
+  background: url('https://example.com/bg.png');
+}
+
+.icon {
+  fill: url('#gradient');
+}

@@ -2,9 +2,12 @@
  * Vite hooks (Vite 8 and 7), placed under unplugin's `vite` escape hatch and merged over the
  * generic Rollup-family hooks (docs/architecture.md §6.1):
  *
- * - `config`: loads the project for the Vite root; in the dev server adds the `https:`/`data:`
- *   alias so import analysis hands those imports to plugins; defaults `cacheDir` to
- *   `<root>/node_modules/.vite` for Deno projects without a `package.json`;
+ * - `config`: loads the project for the Vite root; applies the `deno.json` JSX settings
+ *   (`oxc.jsx` on Vite 8, `esbuild.jsx*` on Vite 7) unless the config sets JSX; mirrors path-like
+ *   import-map entries into `resolve.alias` (CSS `@import`, Sass `@use`); registers the plugin in
+ *   `worker.plugins`; in the dev server adds the `https:`/`data:` alias so import analysis hands
+ *   those imports to plugins; defaults `cacheDir` to `<root>/node_modules/.vite` for Deno
+ *   projects without a `package.json`;
  * - `configEnvironment`: the `deno` export condition for server environments on the Deno
  *   platform, and the optimizer plugin per environment (Vite 8);
  * - `configResolved`: host facts, and `server.fs.allow` for the mirror and the workspace root;
@@ -12,7 +15,9 @@
  *   `deno.lock` reload the project, invalidate every environment and reload the page;
  * - `resolveId`: the platform of `this.environment`, prebundled npm and JSR dependencies in the
  *   dev server (`depsOptimizer`), and virtual ids for import-attribute markers;
- * - `load`: marker modules (watching their target file) and mirror files.
+ * - `load`: marker modules (watching their target file) and mirror files;
+ * - `transform`: import attributes and the source transforms of §5.10 for the platform of
+ *   `this.environment` (`import.meta.main` only in builds).
  *
  * @module
  */
@@ -25,17 +30,21 @@ import type {
   EnvironmentOptions,
   Logger as ViteLogger,
   Plugin as VitePlugin,
+  PluginOption,
   ResolvedConfig,
   UserConfig,
   ViteDevServer,
 } from 'vite'
 import type { HostInput } from '../../core/entries.js'
+import { matchPattern } from '../../core/platform.js'
 import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState } from '../../core/state.js'
+import { transformCodeFilter } from '../../core/state.js'
 import { isWatchedFile } from '../../core/watch.js'
 import { realpathMaybeMissing } from '../../engine/npm-package.js'
-import type { HostLogTarget, HostResolve } from '../shared.js'
-import { toRollupResult } from '../shared.js'
+import { toDirUrl, toPath } from '../../utils/path.js'
+import type { HostLogTarget, HostResolve, TransformHostContext } from '../shared.js'
+import { esbuildJsxOptions, oxcJsxOptions, toRollupResult, transformContext } from '../shared.js'
 import {
   consumerOf,
   conditionsToAdd,
@@ -64,19 +73,35 @@ const REMOTE_URL = /^(https?:\/\/|data:)/
  */
 export const REMOTE_ALIAS: Alias = { find: REMOTE_URL, replacement: '$1' }
 
+/** Options of {@link viteHooks}. */
+export interface ViteHooksOptions {
+  /**
+   * The plugins for Vite's worker bundles (`worker.plugins`, D7): a new instance of this plugin.
+   * Unset for that instance itself (the main config's `worker.plugins` also serves nested
+   * workers).
+   */
+  workerPlugins?: (() => PluginOption) | undefined
+}
+
 /** The Vite-specific hooks of the plugin (merged over the generic ones by unplugin). */
-export function viteHooks(state: PluginState): Partial<VitePlugin> {
+export function viteHooks(
+  state: PluginState,
+  { workerPlugins }: ViteHooksOptions = {},
+): Partial<VitePlugin> {
   const loadFilter = { id: [...state.loadFilter(), VITE_MARKER_ID_FILTER] }
+  const codeFilter = transformCodeFilter(state.options)
   /** Whether Vite's optimizer bundles with Rolldown (Vite 8) rather than esbuild (Vite 7). */
   let rolldownOptimizer = true
+  /** The Vite root (marker ids are relative to it). */
+  let root = process.cwd()
   /** The dev server's environments by name (for the optimizer plugin). */
   const environments = new Map<string, Environment>()
-  return {
+  const hooks: Partial<VitePlugin> = {
     async config(config, env) {
       state.setLogTarget(this)
       rolldownOptimizer =
         typeof (this.meta as { rolldownVersion?: unknown }).rolldownVersion === 'string'
-      const root = viteRoot(config)
+      root = viteRoot(config)
       // The build's own platform is the client's; other environments resolve with a target.
       state.setHints({
         root,
@@ -86,7 +111,10 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
       })
       await state.prepare()
       loadFilter.id = [...state.loadFilter(), VITE_MARKER_ID_FILTER]
+      addAliases(config, importMapAliases(state, root))
       if (env.command === 'serve') addRemoteAlias(config)
+      const result: UserConfig = { ...jsxConfig(state, config, rolldownOptimizer) }
+      if (workerPlugins !== undefined) result.worker = { plugins: () => [workerPlugins()] }
       const { project } = state
       if (
         config.cacheDir === undefined &&
@@ -94,9 +122,9 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
         !hasPackageJson(root, project.workspaceRoot)
       ) {
         // Vite would use the node_modules of the nearest ancestor with a package.json.
-        return { cacheDir: join(root, 'node_modules', '.vite') }
+        result.cacheDir = join(root, 'node_modules', '.vite')
       }
-      return null
+      return Object.keys(result).length === 0 ? null : result
     },
 
     configEnvironment(name, config, env) {
@@ -214,7 +242,7 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
           this.resolve(request, from, { skipSelf: true, kind: options.kind })
         if (outcome.type === 'marker' || outcome.type === 'host-marker') {
           const result = await toRollupResult(outcome, importer, resolve)
-          const id = result === null ? null : viteMarkerIdFor(result.id, state.flavor)
+          const id = result === null ? null : viteMarkerIdFor(result.id, root, state.flavor)
           return id === null ? result : { id }
         }
         const optimizer = devOptimizer(environment)
@@ -238,11 +266,26 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
       filter: loadFilter,
       async handler(id) {
         state.setLogTarget(this)
-        const marker = parseViteMarkerId(id)
+        const marker = parseViteMarkerId(id, root, state.flavor)
         if (marker === null) return state.load(id)
         // Edits of the target file update the importers (dev server) or rebuild (watch mode).
         this.addWatchFile(marker.path)
         return state.load(coreMarkerId(marker))
+      },
+    },
+
+    transform: {
+      filter: { id: { exclude: [/^\0/] }, code: codeFilter ?? /\bwith\s*\{/ },
+      async handler(code, id) {
+        state.setLogTarget(this)
+        await state.prepare()
+        const environment: Environment | undefined = this.environment
+        return state.transform(code, id, {
+          ...transformContext(this as TransformHostContext, id),
+          platform: environment === undefined ? undefined : targetOf(state, environment).platform,
+          // The dev server serves modules one by one: nothing is bundled into an entry chunk.
+          importMetaMain: environment === undefined || environment.mode === 'build',
+        })
       },
     },
 
@@ -254,11 +297,99 @@ export function viteHooks(state: PluginState): Partial<VitePlugin> {
 
     async buildEnd() {
       state.setLogTarget(this)
+      const environment: Environment | undefined = this.environment
+      if (state.ready) {
+        state.reportDuplicates(
+          environment === undefined ? undefined : targetOf(state, environment).platform,
+        )
+      }
       // Watch mode keeps the engines between rebuilds; a build, or a closing dev server, ends.
-      if (this.environment?.mode === 'build' && this.meta.watchMode) await state.flush()
+      if (environment?.mode === 'build' && this.meta.watchMode) await state.flush()
       else await state.close()
     },
   }
+  // The generic transform hook is removed too when nothing needs it (core/plugin.ts).
+  if (codeFilter === null) delete hooks.transform
+  return hooks
+}
+
+/**
+ * The JSX settings of `deno.json` as Vite config (§5.11): `oxc.jsx` on Vite 8, or `esbuild.jsx*`
+ * on Vite 7 and on Vite 8 configs that set `esbuild` options (Vite converts them, and would ignore
+ * them next to `oxc`). Nothing when the config sets JSX itself or turns the transform off.
+ */
+export function jsxConfig(state: PluginState, config: UserConfig, vite8: boolean): UserConfig {
+  const { oxc, esbuild } = config
+  if (vite8 ? oxc === false : esbuild === false) return {}
+  if (typeof oxc === 'object' && oxc.jsx !== undefined) return {}
+  const esbuildJsx = ['jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev'] as const
+  if (typeof esbuild === 'object' && esbuildJsx.some((key) => esbuild[key] !== undefined)) return {}
+  const decision = state.jsxTransform(vite8 ? 'Vite (Oxc)' : 'Vite (esbuild)')
+  if (decision === null) return {}
+  const useEsbuild = !vite8 || (typeof esbuild === 'object' && oxc === undefined)
+  return useEsbuild
+    ? { esbuild: esbuildJsxOptions(decision.transform) }
+    : { oxc: { jsx: oxcJsxOptions(decision.transform) } }
+}
+
+/**
+ * `resolve.alias` entries for the path-like entries of the import map that applies to the Vite
+ * root (D4): bare keys whose target is a local file or directory (`"@styles/": "./src/styles/"`,
+ * `"@app/theme": "./theme.css"`), so what Vite resolves without user plugins (CSS `@import`, Sass
+ * `@use`, PostCSS) sees them. The map is the root `imports` with the scope that contains `root`
+ * (the member a member-rooted app lives in) over it, as import maps try scopes first. Never
+ * `jsr:`/`npm:`/URL targets, keys other scopes redefine (an alias would apply everywhere), or keys
+ * matched by `exclude`. Replacements use `/` separators.
+ */
+export function importMapAliases(state: PluginState, root: string): Alias[] {
+  const { project, options } = state
+  if (project.disabled) return []
+  const { map } = project.importMap
+  const rootUrl = toDirUrl(root, state.flavor)
+  const own = map.scopes
+    .filter((scope) => rootUrl.startsWith(scope.prefix))
+    .toSorted((a, b) => b.prefix.length - a.prefix.length)[0]
+  const ownKeys = new Set(own?.map.entries.map((entry) => entry.key))
+  const redefined = new Set(
+    map.scopes
+      .filter((scope) => scope !== own)
+      .flatMap((scope) => scope.map.entries.map((entry) => entry.key)),
+  )
+  const entries = [
+    ...(own?.map.entries ?? []),
+    ...map.imports.entries.filter((entry) => !ownKeys.has(entry.key)),
+  ]
+  const aliases: Alias[] = []
+  for (const entry of entries) {
+    const { key, address } = entry
+    if (!entry.bare || address === null || !address.startsWith('file:') || redefined.has(key)) {
+      continue
+    }
+    if (matchPattern(options.exclude, key)) continue
+    const path = toPath(address, state.flavor)
+    const target = state.flavor === 'win32' ? path.replaceAll('\\', '/') : path
+    const escaped = key.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+    aliases.push({
+      find: new RegExp(key.endsWith('/') ? `^${escaped}` : `^${escaped}(?=[?#]|$)`),
+      // `$` is special in String.prototype.replace replacements.
+      replacement: target.replaceAll('$', '$$$$'),
+    })
+  }
+  return aliases
+}
+
+/** Appends `aliases` after the configured ones (which win), skipping those already there. */
+function addAliases(config: UserConfig, aliases: readonly Alias[]): void {
+  if (aliases.length === 0) return
+  const resolve = (config.resolve ??= {})
+  const existing = normalizeAlias(resolve.alias)
+  const sources = new Set(
+    existing.flatMap((alias) => (alias.find instanceof RegExp ? [alias.find.source] : [])),
+  )
+  const added = aliases.filter(
+    (alias) => !(alias.find instanceof RegExp && sources.has(alias.find.source)),
+  )
+  if (added.length > 0) resolve.alias = [...existing, ...added]
 }
 
 /** The dev optimizer of an environment (not during builds). */

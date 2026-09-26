@@ -1,0 +1,12 @@
+{
+  "title": "Engine contract, deno engine only: packages linked through a links glob (Deno 2.8.3), which the vendored loader rejects",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "resolve": {
+      "jsr:@fixture/greet@^1": "libs/greet/mod.ts",
+      "@fixture/shout": "libs/shout/mod.ts",
+      "jsr:@fixture/shout@0.3/loud": "libs/shout/loud.ts"
+    }
+  }
+}

@@ -1,4 +1,5 @@
 import type { ExternalIdResult, UnpluginFactory, UnpluginOptions } from 'unplugin'
+import { createVitePlugin } from 'unplugin'
 import { esbuildSetup } from '../hosts/esbuild/index.js'
 import { rolldownHooks } from '../hosts/rolldown/index.js'
 import { rollupHooks } from '../hosts/rollup/index.js'
@@ -6,14 +7,13 @@ import { rsbuildHooks } from '../hosts/rsbuild/index.js'
 import { rspackApply } from '../hosts/rspack/index.js'
 import { viteHooks } from '../hosts/vite/index.js'
 import { webpackApply } from '../hosts/webpack/index.js'
-import type { HostResolvedId } from '../hosts/shared.js'
-import { toRollupResult } from '../hosts/shared.js'
-import type { AstLang, AstParser } from './attributes.js'
+import type { HostResolvedId, TransformHostContext } from '../hosts/shared.js'
+import { toRollupResult, transformContext } from '../hosts/shared.js'
 import { isDenoType } from './attributes.js'
 import { withDenoType } from './id.js'
 import type { Options } from './options.js'
 import { resolveOptions } from './options.js'
-import { PluginState } from './state.js'
+import { PluginState, transformCodeFilter } from './state.js'
 
 /** The plugin name reported to every host. */
 export const PLUGIN_NAME = 'unplugin-deno'
@@ -55,12 +55,29 @@ export const unpluginFactory: UnpluginFactory<Options | undefined, false> = (opt
   const plugin = genericHooks(state)
   if (meta.framework === 'rolldown') plugin.rolldown = rolldownHooks(state)
   if (meta.framework === 'rollup') plugin.rollup = rollupHooks(state)
-  if (meta.framework === 'vite') plugin.vite = viteHooks(state)
+  if (meta.framework === 'vite') {
+    // Vite bundles workers with `worker.plugins`: a plugin instance of their own (D7, §6.1).
+    plugin.vite = viteHooks(state, {
+      workerPlugins: () => createVitePlugin(viteWorkerFactory)(options),
+    })
+  }
+  return plugin
+}
+
+/**
+ * The plugin Vite runs in worker bundles (`worker.plugins`, docs/architecture.md §6.1): the
+ * generic and Vite hooks of a separate state, without registering itself for workers again (the
+ * main config's `worker.plugins` also serves nested workers).
+ */
+const viteWorkerFactory: UnpluginFactory<Options | undefined, false> = (options, meta) => {
+  const state = new PluginState(options, meta.framework)
+  const plugin = genericHooks(state)
+  plugin.vite = viteHooks(state)
   return plugin
 }
 
 /** The Rollup-family context members the generic hooks use at runtime (untyped by unplugin). */
-interface RuntimeContext {
+interface RuntimeContext extends TransformHostContext {
   meta?: {
     watchMode?: boolean
     rollupVersion?: string
@@ -72,7 +89,6 @@ interface RuntimeContext {
     importer: string | undefined,
     options: { skipSelf: boolean; kind?: string },
   ) => Promise<HostResolvedId | null>
-  parse?: (code: string, options: { lang: AstLang }) => unknown
   addWatchFile?: (file: string) => void
   warn?: (message: string) => void
   info?: (message: string) => void
@@ -83,7 +99,8 @@ interface RuntimeContext {
  * override some under their escape hatches).
  */
 function genericHooks(state: PluginState): UnpluginOptions {
-  return {
+  const codeFilter = transformCodeFilter(state.options)
+  const hooks: UnpluginOptions = {
     name: PLUGIN_NAME,
     enforce: 'pre',
     async buildStart() {
@@ -126,16 +143,11 @@ function genericHooks(state: PluginState): UnpluginOptions {
       },
     },
     transform: {
-      filter: { id: { exclude: [/^\0/] }, code: /\bwith\s*\{/ },
+      filter: { id: { exclude: [/^\0/] }, code: codeFilter ?? /\bwith\s*\{/ },
       async handler(code, id) {
         const context = this as RuntimeContext
         state.setLogTarget(context)
-        const parse = context.parse
-        const parser: AstParser | undefined =
-          typeof parse === 'function'
-            ? (text, lang) => parse.call(context, text, { lang })
-            : undefined
-        return state.transform(code, id, parser)
+        return state.transform(code, id, transformContext(context, id))
       },
     },
     watchChange(id) {
@@ -144,8 +156,12 @@ function genericHooks(state: PluginState): UnpluginOptions {
     async buildEnd() {
       const context = this as RuntimeContext
       state.setLogTarget(context)
+      state.reportDuplicates()
       if (context.meta?.watchMode === true) await state.flush()
       else await state.close()
     },
   }
+  // Import attributes, `import.meta.main`, env inlining and the `Deno.*` check all off.
+  if (codeFilter === null) delete hooks.transform
+  return hooks
 }

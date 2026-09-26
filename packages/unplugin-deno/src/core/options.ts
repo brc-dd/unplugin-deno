@@ -9,23 +9,42 @@ export type Platform = 'browser' | 'node' | 'deno' | 'neutral'
 /** A string or RegExp pattern; strings match exactly unless documented otherwise. */
 export type Pattern = string | RegExp
 
-/** Options for inlining environment variables into the bundle (planned for M2). */
+/**
+ * Options for inlining environment variables: reads with a literal key (`Deno.env.get("X")`,
+ * `process.env.X`, `process.env["X"]`) of allowed variables are replaced with their values as JSON
+ * literals (`undefined` when unset). `Deno.env.toObject()` and other reads stay as they are.
+ * Recommended: `{ prefix: 'PUBLIC_' }`.
+ */
 export interface EnvOptions {
-  /** Inline variables whose name starts with one of these prefixes, e.g. `PUBLIC_`. */
+  /** Inline variables whose name starts with one of these (non-empty) prefixes, e.g. `PUBLIC_`. */
   prefix?: string | string[]
   /** Inline these variables by exact name. */
   allow?: string[]
-  /** `.env` files to read, relative to `cwd`. */
+  /**
+   * `.env` files to read, relative to `cwd`; later files win, and variables set in the process
+   * win over every file.
+   * @default `.env` and `.env.local`, where they exist
+   */
   files?: string[]
+  /**
+   * Inline into code for server platforms (`deno`, `node`, `neutral`) too, not only for the
+   * browser.
+   * @default false
+   */
+  server?: boolean
 }
 
-/** Toggles for the diagnostics checks (planned for M2). */
+/** Toggles for the diagnostics checks; `lockfile` is planned. */
 export interface ChecksOptions {
-  /** Warn when `node:` builtins, `Deno.*` or CommonJS-only packages reach a browser bundle. */
+  /**
+   * Browser safety: warn when a local or remote module of a browser bundle imports a `node:`
+   * builtin (with the importer), and when an npm package resolves to a native addon (`.node`,
+   * any platform; it is kept external either way).
+   */
   browserSafety?: boolean
-  /** Warn about duplicate copies of frameworks (react, preact, vue, solid). */
+  /** Warn at the end of a build when one npm package was bundled in several versions. */
   duplicates?: boolean
-  /** Explain lockfile drift, minimum-dependency-age and `cachedOnly` misses. */
+  /** Explain lockfile drift, minimum-dependency-age and `cachedOnly` misses (planned). */
   lockfile?: boolean
 }
 
@@ -72,13 +91,15 @@ export interface Options {
   cacheDir?: string
   /**
    * Resolution engine: the vendored `@deno/loader` (`'loader'`), the installed Deno CLI
-   * (`'deno'`, planned for M2), or `'auto'` (the loader, falling back to the CLI when the config
-   * uses features the loader lacks).
+   * (`'deno'`: `deno info --json` for the module graph and `deno transpile` for remote TypeScript;
+   * needs Deno 2.8.3+), or `'auto'` (the loader, unless the project uses a feature the vendored
+   * loader lacks — `catalog:` versions, globs in `links`, `jsrDepsInNodeModules` — and a usable
+   * Deno is found).
    * @default 'auto'
    */
   engine?: 'auto' | 'loader' | 'deno'
   /**
-   * Deno executable used by the `deno` engine (planned; the engine is not implemented yet).
+   * Deno executable used by the `deno` engine.
    * @default 'deno' (looked up on `PATH`)
    */
   denoBinary?: string
@@ -167,34 +188,47 @@ export interface Options {
    */
   importAttributes?: boolean
   /**
-   * Replace `import.meta.main` with `false` outside entry modules (planned for M2).
+   * Load `.wasm` module imports (without an import attribute or a query) like Deno: the module is
+   * instantiated and its exports are the importer's bindings; the Wasm's own imports resolve like
+   * other imports. `false` leaves `.wasm` files to the host (Vite `?init`, `@rollup/plugin-wasm`).
+   * @default true
+   */
+  wasm?: boolean
+  /**
+   * Replace `import.meta.main` with `false` in modules that are not entries of the build (Rollup,
+   * Rolldown and Vite builds; esbuild only in remote modules, which it loads from the mirror).
    * @default true
    */
   importMetaMain?: boolean
   /**
-   * Inline environment variables (planned for M2); `false` disables it.
+   * Inline environment variables into browser bundles (see {@link EnvOptions}); `false` disables
+   * it. Not on esbuild for `Deno.env.get()` reads (esbuild has no transform hook; its `define`
+   * covers `process.env.X`).
    * @default false
    */
   env?: EnvOptions | false
   /**
-   * What to do when `Deno.*` globals reach a browser bundle (planned for M2).
+   * What to do when a local module of a browser bundle uses a `Deno.*` global (reported once per
+   * file with its first location; `'error'` fails the build). Not on esbuild (no transform hook).
    * @default 'warn' for the browser platform, otherwise 'off'
    */
   denoGlobals?: 'error' | 'warn' | 'off'
   /**
-   * Who transforms JSX in local files: the host (`'host'`), the engine per `deno.json`
-   * (`'deno'`, supports `precompile`), or `'auto'` (host for local files, engine for remote ones).
+   * Who configures the JSX transform of local files: `'auto'` applies the `compilerOptions.jsx*`
+   * settings of `deno.json` to the host's transform (Vite `oxc.jsx`/`esbuild.jsx*`, Rolldown
+   * `transform.jsx`, Rollup `jsx`, esbuild `jsx*`) unless the host config sets JSX itself; `'host'`
+   * never touches the host config. Remote modules are always transpiled by the engine.
    * @default 'auto'
    *
-   * Planned: `'deno'` (transpiling local files through the engine, e.g. `jsx: "precompile"`) has no
-   * effect yet; local files are always transpiled by the host, remote modules by the engine.
+   * Planned: `'deno'` (transpiling local files through the engine, e.g. `jsx: "precompile"`) acts
+   * like `'auto'` for now; `precompile` falls back to the automatic runtime with a warning.
    */
   jsx?: 'auto' | 'host' | 'deno'
 
   // Diagnostics
 
   /**
-   * Diagnostics checks (planned for M2); `true`/`false` toggles all of them.
+   * Diagnostics checks (see {@link ChecksOptions}); `true`/`false` toggles all of them.
    * @default all enabled
    */
   checks?: ChecksOptions | boolean
@@ -239,8 +273,10 @@ export interface ResolvedOptions {
   pinExternals: boolean | null
   emitDenoConfig: boolean | string
   importAttributes: boolean
+  wasm: boolean
   importMetaMain: boolean
-  env: { prefix: string[]; allow: string[]; files: string[] } | false
+  /** `files: null`: the default files (`.env`, `.env.local`). */
+  env: { prefix: string[]; allow: string[]; files: string[] | null; server: boolean } | false
   /** `null`: decided per platform by {@link denoGlobalsFor}. */
   denoGlobals: 'error' | 'warn' | 'off' | null
   jsx: 'auto' | 'host' | 'deno'
@@ -325,6 +361,7 @@ export function resolveOptions(
     pinExternals: optionalBoolean(options, 'pinExternals') ?? null,
     emitDenoConfig: resolveEmitDenoConfig(options.emitDenoConfig),
     importAttributes: optionalBoolean(options, 'importAttributes') ?? true,
+    wasm: optionalBoolean(options, 'wasm') ?? true,
     importMetaMain: optionalBoolean(options, 'importMetaMain') ?? true,
     env: resolveEnv(options.env),
     denoGlobals:
@@ -389,11 +426,17 @@ function resolveEnv(value: unknown): ResolvedOptions['env'] {
   }
   const env = value as Record<string, unknown>
   const prefix = env.prefix
+  const prefixes =
+    typeof prefix === 'string' ? [prefix] : (stringArray(env, 'prefix', 'env.prefix') ?? [])
+  // An empty prefix would inline every variable of the build process, secrets included.
+  if (prefixes.includes('')) throw invalid('env.prefix', 'non-empty prefixes', '')
+  const allow = stringArray(env, 'allow', 'env.allow') ?? []
+  if (allow.includes('')) throw invalid('env.allow', 'non-empty variable names', '')
   return {
-    prefix:
-      typeof prefix === 'string' ? [prefix] : (stringArray(env, 'prefix', 'env.prefix') ?? []),
-    allow: stringArray(env, 'allow', 'env.allow') ?? [],
-    files: stringArray(env, 'files', 'env.files') ?? [],
+    prefix: prefixes,
+    allow,
+    files: stringArray(env, 'files', 'env.files') ?? null,
+    server: optionalBoolean(env, 'server', 'env.server') ?? false,
   }
 }
 

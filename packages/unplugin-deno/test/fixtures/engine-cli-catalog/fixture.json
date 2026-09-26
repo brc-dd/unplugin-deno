@@ -1,0 +1,11 @@
+{
+  "title": "Engine contract, deno engine only: catalog: versions in deno.json imports and package.json dependencies (Deno 2.8), which the vendored loader cannot resolve or install",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "packageDirs": {
+      "kleur": "node_modules/.deno/kleur@4.1.5/node_modules/kleur",
+      "esm-env": "node_modules/.deno/esm-env@1.2.2/node_modules/esm-env"
+    }
+  }
+}

@@ -24,9 +24,12 @@ import { sha256Hex } from '../utils/hash.js'
 import type { Mirror } from './mirror.js'
 import {
   createMirror,
+  hostMirrorMap,
   isCodeMediaType,
   mirrorGeneration,
+  mirrorMapSources,
   mirrorSegments,
+  mirrorSourceName,
   relativeSpecifier,
   sanitizeSegment,
   stripSourceMappingComment,
@@ -256,6 +259,63 @@ describe('isCodeMediaType / stripSourceMappingComment', () => {
   })
 })
 
+describe('source map sources (L2, L11)', () => {
+  it('names a remote module as sourceRoot + sources = its URL', () => {
+    expect(mirrorMapSources('https://jsr.io/@std/path/1.1.6/posix/join.ts')).toEqual({
+      sourceRoot: 'https://jsr.io/@std/path/1.1.6/posix/',
+      sources: ['join.ts'],
+    })
+    // A query stays with the name, even when it contains slashes; the fragment is dropped.
+    expect(mirrorMapSources('https://esm.sh/react@19?target=es2022&deps=a/b#x')).toEqual({
+      sourceRoot: 'https://esm.sh/',
+      sources: ['react@19?target=es2022&deps=a/b'],
+    })
+    expect(mirrorMapSources('http://localhost:8000/mod.ts')).toEqual({
+      sourceRoot: 'http://localhost:8000/',
+      sources: ['mod.ts'],
+    })
+  })
+
+  it('keeps data: URLs and URLs without a file name as they are', () => {
+    expect(mirrorMapSources('data:text/javascript,export default 1')).toEqual({
+      sources: ['data:text/javascript,export default 1'],
+    })
+    expect(mirrorMapSources('https://x.test/dir/')).toEqual({ sources: ['https://x.test/dir/'] })
+  })
+
+  it('gives Rollup-family hosts the name next to the mirror file', () => {
+    expect(mirrorSourceName('/m/https/jsr.io/@std/path/1.1.6/posix/join.ts.js', 'posix')).toBe(
+      'join.ts',
+    )
+    expect(mirrorSourceName('C:\\m\\https\\x.test\\App.tsx.js', 'win32')).toBe('App.tsx')
+    expect(mirrorSourceName('/m/https/esm.sh/react.js', 'posix')).toBe('react.js')
+    expect(mirrorSourceName('/m/https/x.test/util.mjs?v=1', 'posix')).toBe('util.mjs')
+    const map: EncodedSourceMap = {
+      version: 3,
+      file: 'join.ts.js',
+      sourceRoot: 'https://jsr.io/@std/path/1.1.6/posix/',
+      sources: ['join.ts'],
+      sourcesContent: ['export function join() {}'],
+      names: [],
+      mappings: 'AAAA',
+    }
+    expect(hostMirrorMap(map, '/m/https/jsr.io/@std/path/1.1.6/posix/join.ts.js', 'posix')).toEqual(
+      {
+        version: 3,
+        file: 'join.ts.js',
+        sources: ['join.ts'],
+        sourcesContent: ['export function join() {}'],
+        names: [],
+        mappings: 'AAAA',
+      },
+    )
+    const data = { ...map, sourceRoot: undefined, sources: ['data:text/javascript,1'] }
+    expect(hostMirrorMap(data, '/m/data/0123456789abcdef.js', 'posix').sources).toEqual([
+      '0123456789abcdef.js',
+    ])
+  })
+})
+
 // ---------------------------------------------------------------------------------------------
 // A fake engine
 
@@ -481,17 +541,21 @@ describe('ensureMirrored', () => {
     })
     const file = await mirror.ensureMirrored(url)
     const map = JSON.parse(await readFile(`${file.path}.map`, 'utf8')) as EncodedSourceMap
+    // The URL as sourceRoot + sources: readers that apply sourceRoot (esbuild) see the URL.
     expect(map).toMatchObject({
       version: 3,
       file: 'a.ts.js',
-      sources: [url],
+      sourceRoot: `${JSR}/`,
+      sources: ['a.ts'],
       sourcesContent: [source],
     })
+    expect(`${map.sourceRoot}${map.sources[0]}`).toBe(url)
     expect(map.mappings.split(';').length).toBeGreaterThanOrEqual(2)
     const plain = await mirror.ensureMirrored('https://x.test/plain.js')
     const plainMap = JSON.parse(await readFile(`${plain.path}.map`, 'utf8')) as EncodedSourceMap
     expect(plainMap).toMatchObject({
-      sources: ['https://x.test/plain.js'],
+      sourceRoot: 'https://x.test/',
+      sources: ['plain.js'],
       sourcesContent: ['export const plain = 1;\n'],
     })
     expect(await mirror.readModule(file.path)).toEqual({
@@ -961,7 +1025,8 @@ describe('ensureMirrored with the loader engine', () => {
       expect(code).toContain('from "../assert/assert.ts.js"')
       expect(code).not.toContain('sourceMappingURL=data:')
       const map = JSON.parse(await readFile(`${file.path}.map`, 'utf8')) as EncodedSourceMap
-      expect(map.sources).toEqual([url])
+      expect(map.sourceRoot).toBe('https://deno.land/std@0.224.0/text/')
+      expect(map.sources).toEqual(['closest_string.ts'])
       await mirror.flush()
       const manifest = JSON.parse(await readFile(join(mirror.root, 'manifest.json'), 'utf8')) as {
         modules: Record<string, { integrity: string }>

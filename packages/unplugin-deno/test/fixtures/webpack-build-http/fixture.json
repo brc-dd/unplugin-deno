@@ -1,0 +1,8 @@
+{
+  "title": "webpack experiments.buildHttp is left alone: the http(s) URLs its allowedUris name are fetched by webpack (the test serves one locally and writes src/allowed.ts), the other remote imports come from the mirror",
+  "entries": ["src/main.ts"],
+  "hosts": ["webpack"],
+  "expect": {
+    "values": { "closest": "help" }
+  }
+}

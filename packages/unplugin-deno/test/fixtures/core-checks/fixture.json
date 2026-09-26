@@ -1,0 +1,14 @@
+{
+  "title": "Browser-safety and duplicate checks: a local module importing a node: builtin into a browser bundle is reported with the importer, and an npm package bundled in two versions is reported when the build ends",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "rollup", "esbuild", "vite"],
+  "expect": {
+    "values": {
+      "path": "object",
+      "v5": 21,
+      "v3": 21
+    },
+    "builtin": "src/main.ts → node:path",
+    "duplicate": "nanoid is bundled in 2 versions"
+  }
+}

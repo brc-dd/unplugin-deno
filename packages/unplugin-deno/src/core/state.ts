@@ -7,6 +7,7 @@
  * @module
  */
 import { readFile } from 'node:fs/promises'
+import { MagicString } from 'magic-string'
 import type { UnpluginContextMeta } from 'unplugin'
 import type { Project } from '../config/project.js'
 import { configGeneration, loadProject } from '../config/project.js'
@@ -14,6 +15,8 @@ import { DenoPluginError } from '../diagnostics/errors.js'
 import type { Logger } from '../diagnostics/logger.js'
 import { resolveDenoDir } from '../engine/deno-dir.js'
 import { createEngine } from '../engine/create.js'
+import type { EngineSelection } from '../engine/select.js'
+import { selectEngineKind } from '../engine/select.js'
 import type { EncodedSourceMap, Engine } from '../engine/types.js'
 import type { HostContext, HostLogTarget } from '../hosts/shared.js'
 import { createHostLogger } from '../hosts/shared.js'
@@ -21,26 +24,37 @@ import type { PathFlavor } from '../utils/path.js'
 import { HOST_PATH_FLAVOR, toFileUrl } from '../utils/path.js'
 import { vendoredLoaderVersion } from '../vendored-deno-loader.js'
 import type { AstParser, MarkerModule } from './attributes.js'
-import { synthesizeMarkerModule, transformImportAttributes } from './attributes.js'
+import { applyImportAttributes, synthesizeMarkerModule } from './attributes.js'
+import {
+  denoGlobalsMessage,
+  displayModule,
+  foreignNodeModulesMessage,
+  PackageVersions,
+} from './checks.js'
 import type { HostInput } from './entries.js'
 import { normalizeEntries } from './entries.js'
+import type { EnvInlining } from './env.js'
+import { inlinesEnv, loadEnv } from './env.js'
 import {
   DENO_TYPE_ID_FILTER,
   DENO_VIRTUAL_ID_FILTER,
   EMPTY_MODULE_ID,
   isDenoVirtualId,
   isForeignId,
+  isScriptModuleId,
   isVirtualId,
   pathPrefixFilter,
   readDenoType,
   splitQuery,
 } from './id.js'
 import type { Mirror } from './mirror.js'
-import { createMirror, mirrorGeneration } from './mirror.js'
+import { createMirror, hostMirrorMap, mirrorGeneration } from './mirror.js'
+import type { JsxDecision } from './jsx.js'
+import { jsxTransformFor, precompileWarning } from './jsx.js'
 import type { NpmStrategy } from './npm.js'
-import { denoDirVariants, npmStrategyFor } from './npm.js'
+import { denoDirVariants, isGlobalCachePath, isNodeModulesPath, npmStrategyFor } from './npm.js'
 import type { Platform, ResolvedOptions } from './options.js'
-import { defaultCacheDir, resolveOptions } from './options.js'
+import { defaultCacheDir, denoGlobalsFor, resolveOptions } from './options.js'
 import type { Options } from './options.js'
 import type { PlatformHint } from './platform.js'
 import { conditionsFor, derivePlatform, enginePlatformFor } from './platform.js'
@@ -52,6 +66,9 @@ import type {
   ResolveTarget,
 } from './resolve.js'
 import { BROAD_RESOLVE_ID_FILTER, createResolver, resolveIdFilter } from './resolve.js'
+import type { DenoReference } from './source.js'
+import { applySourceTransforms, scanSource } from './source.js'
+import { isWasmModuleId, synthesizeWasmModule, WASM_MODULE_ID_FILTER } from './wasm.js'
 import { PLUGIN_VERSION } from './version.js'
 import type { InvalidationTarget } from './watch.js'
 import { invalidateProject, isWatchedFile, watchFiles } from './watch.js'
@@ -87,6 +104,8 @@ interface Configuration {
   targets: Map<string, Resolver>
   /** Mirrors of other generations (targets with another platform or conditions). */
   mirrors: Map<string, Mirror>
+  /** The environment variables to inline (read on first use, §5.10). */
+  env?: Promise<EnvInlining>
 }
 
 /** The platform and conditions an engine is created for. */
@@ -103,6 +122,31 @@ export interface HostSourceMap {
   sourcesContent?: string[]
   names: string[]
   mappings: string
+}
+
+/** Host facts of one `transform` call (§5.10). */
+export interface TransformContext {
+  /** The host's parser (`this.parse`), for the import-attribute pre-pass and the source scan. */
+  parse?: AstParser | undefined
+  /** Whether the module is an entry of the build (`this.getModuleInfo(id)?.isEntry`). */
+  isEntry?: (() => boolean) | undefined
+  /** The platform the module is bundled for (a Vite environment's); default: the build's. */
+  platform?: Platform | undefined
+  /** `false` leaves `import.meta.main` alone (Vite's dev server serves modules unbundled). */
+  importMetaMain?: boolean | undefined
+}
+
+/**
+ * The `code` filter of the `transform` hook for the resolved options: import attributes, and the
+ * source transforms and checks that are on (§5.5, §5.10); `null` when none is (no hook needed).
+ */
+export function transformCodeFilter(options: ResolvedOptions): RegExp | null {
+  const alternatives: string[] = []
+  if (options.importAttributes) alternatives.push('\\bwith\\s*\\{')
+  if (options.importMetaMain) alternatives.push('import\\.meta\\.main')
+  if (options.env !== false) alternatives.push('Deno\\.env\\.get', 'process\\.env')
+  if (options.denoGlobals !== 'off') alternatives.push('\\bDeno\\.')
+  return alternatives.length === 0 ? null : new RegExp(alternatives.join('|'))
 }
 
 /** The source of a module returned from `load` or `transform`. */
@@ -149,6 +193,12 @@ export class PluginState implements ResolverState, InvalidationTarget {
   #configuration: Configuration | undefined
   #preparing: Promise<Configuration> | undefined
   readonly #engines = new Map<string, Promise<Engine>>()
+  /** The engine kind for this project (`engine: 'auto'` may probe the Deno binary once). */
+  #selection: Promise<EngineSelection> | undefined
+  /** Keys of the warnings logged once (see {@link PluginState.warnOnce}). */
+  readonly #warned = new Set<string>()
+  /** npm packages bundled in this build, per platform (X4). */
+  readonly #packages = new PackageVersions()
 
   /**
    * @throws {DenoPluginError} `OPTIONS_INVALID` for invalid options (checked at plugin creation).
@@ -221,6 +271,9 @@ export class PluginState implements ResolverState, InvalidationTarget {
   async configure(project: Project): Promise<void> {
     for (const warning of project.warnings) this.logger.warn(`${warning.message} (${warning.file})`)
     for (const warning of project.importMap.warnings) this.logger.warn(warning)
+    const foreign = foreignNodeModulesMessage(project.nodeModules)
+    if (foreign !== undefined)
+      this.warnOnce(`foreign-node-modules\0${project.nodeModules.dir}`, foreign)
     const host = this.host
     const platform = derivePlatform(this.options, host, project)
     const conditions = conditionsFor(platform, [
@@ -306,6 +359,50 @@ export class PluginState implements ResolverState, InvalidationTarget {
     return this.#configuration !== undefined
   }
 
+  // -- diagnostics ------------------------------------------------------------------------------
+
+  /** Logs `message` as a warning, once per `key` for this plugin instance. */
+  warnOnce(key: string, message: string): void {
+    if (this.#warned.has(key)) return
+    this.#warned.add(key)
+    this.logger.warn(message)
+  }
+
+  /** Records an npm package bundled for `platform` (X4); see {@link PluginState.reportDuplicates}. */
+  recordNpmPackage(platform: Platform, name: string, version: string): void {
+    if (this.options.checks.duplicates) this.#packages.record(platform, name, version)
+  }
+
+  /**
+   * Warns about npm packages bundled in several versions for `platform` (every platform when
+   * omitted) and forgets the records; hosts call it when a build ends.
+   */
+  reportDuplicates(platform?: Platform): void {
+    for (const message of this.#packages.take(platform)) this.logger.warn(message)
+  }
+
+  /**
+   * The JSX transform the host should apply to local files (§5.11), or `null` to leave the host's
+   * settings alone; warns once for `jsx: "precompile"`. The project must be loaded. `host` names
+   * the host in the warning.
+   */
+  jsxTransform(host: string): JsxDecision | null {
+    const decision = jsxTransformFor(this.project, this.options)
+    if (decision?.precompile === true && decision.transform.runtime === 'automatic') {
+      this.warnOnce('jsx-precompile', precompileWarning(host, decision.transform.importSource))
+    }
+    return decision
+  }
+
+  /** The environment variables to inline, or `null` when `env` is off (§5.10). */
+  envInlining(): Promise<EnvInlining> | null {
+    const configuration = this.#configured()
+    const { env } = this.options
+    if (env === false) return null
+    configuration.env ??= loadEnv(env, this.options.cwd, process.env, this.logger)
+    return configuration.env
+  }
+
   /**
    * The `resolveId` filter (§5.2): precise once the project is loaded, otherwise (and when
    * `broad`) owned schemes, markers and every bare specifier.
@@ -316,14 +413,18 @@ export class PluginState implements ResolverState, InvalidationTarget {
       : this.#configuration.filter
   }
 
-  /** The `load` filter: mirror files, marker ids and the plugin's own virtual ids. */
+  /**
+   * The `load` filter: mirror files (first), marker ids, the plugin's own virtual ids and, with
+   * the `wasm` option, `.wasm` modules (§5.12).
+   */
   loadFilter(): RegExp[] {
     const cacheDir = this.#configuration?.cacheDir ?? this.options.cacheDir
     const mirror =
       cacheDir === null
         ? /[\\/]node_modules[\\/]\.unplugin-deno[\\/]/
         : pathPrefixFilter(cacheDir, this.flavor)
-    return [mirror, DENO_TYPE_ID_FILTER, DENO_VIRTUAL_ID_FILTER]
+    const filters = [mirror, DENO_TYPE_ID_FILTER, DENO_VIRTUAL_ID_FILTER]
+    return this.options.wasm ? [...filters, WASM_MODULE_ID_FILTER] : filters
   }
 
   // -- engines ----------------------------------------------------------------------------------
@@ -342,23 +443,27 @@ export class PluginState implements ResolverState, InvalidationTarget {
     const key = `${purpose}\0${enginePlatform}\0${conditions.join(',')}`
     let engine = this.#engines.get(key)
     if (engine === undefined) {
-      engine = createEngine(this.options.engine === 'deno' ? 'deno' : 'loader', {
-        project: {
-          root: project.root,
-          workspaceRoot: project.workspaceRoot,
-          configPath: project.configPath ?? undefined,
-          // Only an existing (v5) lockfile; the engine writes none (§3.4, §4.4).
-          lockfilePath: project.lockfile === null ? undefined : (project.lockfilePath ?? undefined),
-          nodeModulesDir: project.nodeModules.mode,
-        },
-        platform: enginePlatform,
-        conditions: [...conditions],
-        cachedOnly: this.options.cachedOnly,
-        ...(project.minimumDependencyAge.newestDependencyDate === null
-          ? {}
-          : { newestDependencyDate: project.minimumDependencyAge.newestDependencyDate }),
-        logger: this.logger,
-      })
+      engine = this.#engineSelection(project).then((selection) =>
+        createEngine(selection.kind, {
+          project: {
+            root: project.root,
+            workspaceRoot: project.workspaceRoot,
+            configPath: project.configPath ?? undefined,
+            // Only an existing (v5) lockfile; the engine writes none (§3.4, §4.4).
+            lockfilePath:
+              project.lockfile === null ? undefined : (project.lockfilePath ?? undefined),
+            nodeModulesDir: project.nodeModules.mode,
+          },
+          platform: enginePlatform,
+          conditions: [...conditions],
+          cachedOnly: this.options.cachedOnly,
+          ...(project.minimumDependencyAge.newestDependencyDate === null
+            ? {}
+            : { newestDependencyDate: project.minimumDependencyAge.newestDependencyDate }),
+          logger: this.logger,
+          denoBinary: this.options.denoBinary,
+        }),
+      )
       this.#engines.set(key, engine)
       const created = engine
       created.catch(() => {
@@ -368,8 +473,27 @@ export class PluginState implements ResolverState, InvalidationTarget {
     return engine
   }
 
+  /**
+   * Which engine implements the project (§4.3): the loader unless `engine: 'deno'`, or `'auto'`
+   * with a project that uses a feature the vendored loader lacks and a usable Deno on `PATH`. The
+   * reason goes to the debug log; a fallback to the loader despite such a feature is a warning.
+   */
+  #engineSelection(project: Project): Promise<EngineSelection> {
+    this.#selection ??= selectEngineKind({
+      engine: this.options.engine,
+      project,
+      denoBinary: this.options.denoBinary,
+    }).then((selection) => {
+      this.logger.debug(`[engine] ${selection.kind}: ${selection.reason}`)
+      if (selection.warning !== undefined) this.logger.warn(selection.warning)
+      return selection
+    })
+    return this.#selection
+  }
+
   /** Disposes every engine; the next resolution creates new ones. */
   async disposeEngines(): Promise<void> {
+    this.#selection = undefined
     const engines = [...this.#engines.values()]
     this.#engines.clear()
     await Promise.allSettled(engines.map(async (engine) => (await engine).dispose()))
@@ -460,6 +584,9 @@ export class PluginState implements ResolverState, InvalidationTarget {
         framework: this.framework,
         flavor: this.flavor,
         engine: () => this.engine('main', engineTarget),
+        warnOnce: (warning, message) => this.warnOnce(warning, message),
+        recordNpmPackage: (packagePlatform, name, version) =>
+          this.recordNpmPackage(packagePlatform, name, version),
       })
       configuration.targets.set(key, resolver)
     }
@@ -491,8 +618,9 @@ export class PluginState implements ResolverState, InvalidationTarget {
   }
 
   /**
-   * `load` for marker ids (synthesised modules), mirror code files (code and source map) and the
-   * empty module; `null` for everything else (the host loads assets and local files).
+   * `load` for marker ids (synthesised modules), `.wasm` modules (synthesised, §5.12), mirror code
+   * files (code and source map) and the empty module; `null` for everything else (the host loads
+   * assets and local files).
    */
   async load(id: string): Promise<LoadResult | null> {
     if (isDenoVirtualId(id)) {
@@ -513,21 +641,108 @@ export class PluginState implements ResolverState, InvalidationTarget {
       const url = (await mirror.urlForMirrorPath(path)) ?? toFileUrl(path, this.flavor)
       return synthesizeMarkerModule(marker.type, bytes, url)
     }
+    if (this.options.wasm && isWasmModuleId(id)) {
+      const bytes = await readFile(id).catch((error: unknown) => {
+        throw new DenoPluginError('RESOLVE_NOT_FOUND', `Cannot read the Wasm module ${id}.`, {
+          hint: 'Check that the imported file exists.',
+          specifier: id,
+          cause: error,
+        })
+      })
+      return synthesizeWasmModule(bytes, id, this.flavor)
+    }
     if (!mirror.isMirrorPath(id)) return null
     const module = await mirror.readModule(id)
-    return module === null
-      ? null
-      : { code: module.code, map: toHostSourceMap(module.map), moduleType: 'js' }
+    if (module === null) return null
+    const map = module.map === null ? null : hostMirrorMap(module.map, id, this.flavor)
+    return { code: module.code, map: toHostSourceMap(map), moduleType: 'js' }
   }
 
-  /** The import-attribute pre-pass (§5.5), unless the host passes attributes to `resolveId`. */
-  async transform(code: string, id: string, parse?: AstParser): Promise<LoadResult | null> {
-    if (!this.options.importAttributes || this.nativeAttributes) return null
+  /**
+   * The `transform` hook: the import-attribute pre-pass (§5.5; not for mirror files, which were
+   * rewritten when mirrored, nor on hosts that pass attributes to `resolveId`), then the source
+   * transforms and checks of §5.10: `import.meta.main` → `false` outside entries, environment
+   * variables inlined (browser platform, or `env.server`; local and mirror files), and `Deno.*`
+   * references in local files of browser bundles reported once per file (an error with
+   * `denoGlobals: 'error'`). npm package files are left alone except for `import.meta.main`.
+   *
+   * @throws {DenoPluginError} `PLATFORM_INCOMPATIBLE` for `Deno.*` with `denoGlobals: 'error'`.
+   */
+  async transform(
+    code: string,
+    id: string,
+    context: TransformContext = {},
+  ): Promise<LoadResult | null> {
     if (isVirtualId(id) || isForeignId(id)) return null
-    const { mirror } = await this.prepare()
-    if (mirror.isMirrorPath(id)) return null
-    const result = transformImportAttributes(code, id, parse)
-    return result === null ? null : { code: result.code, map: toHostSourceMap(result.map) }
+    const configuration = await this.prepare()
+    const path = splitQuery(id).base
+    const kind = this.#moduleKind(configuration, path)
+    const { options } = this
+    const magic = new MagicString(code)
+    let changed = false
+    if (options.importAttributes && !this.nativeAttributes && kind !== 'mirror') {
+      changed = applyImportAttributes(magic, code, id, context.parse)
+    }
+    const platform = context.platform ?? configuration.platform
+    // The source transforms read JavaScript and TypeScript only (not CSS, HTML or SFC templates).
+    const script = isScriptModuleId(id)
+    const replaceMain =
+      script &&
+      options.importMetaMain &&
+      context.importMetaMain !== false &&
+      code.includes('import.meta.main')
+    const inlineEnv =
+      script &&
+      kind !== 'package' &&
+      inlinesEnv(options, platform) &&
+      /Deno\.env|process\.env/.test(code)
+    const denoGlobals =
+      script && kind === 'local' && platform === 'browser'
+        ? denoGlobalsFor(options, platform)
+        : 'off'
+    const checkDeno = denoGlobals !== 'off' && code.includes('Deno')
+    if (replaceMain || inlineEnv || checkDeno) {
+      const scan = scanSource(code, id, context.parse)
+      const env = inlineEnv ? await this.envInlining() : null
+      const applied = applySourceTransforms(magic, scan, {
+        importMetaMain:
+          replaceMain && scan.importMetaMain.length > 0 && context.isEntry?.() !== true,
+        envValue: env === null ? undefined : (key) => env.value(key),
+      })
+      changed = applied.changed || changed
+      if (checkDeno && applied.denoReferences.length > 0) {
+        this.#reportDenoGlobals(path, code, applied.denoReferences, denoGlobals)
+      }
+    }
+    if (!changed) return null
+    const map = magic.generateMap({ source: id, hires: 'boundary', includeContent: true })
+    return { code: magic.toString(), map: toHostSourceMap({ ...map, version: 3 }) }
+  }
+
+  /** What a module is for the source transforms: a mirror file, an npm package file or local. */
+  #moduleKind(configuration: Configuration, path: string): 'mirror' | 'package' | 'local' {
+    if (configuration.mirror.isMirrorPath(path)) return 'mirror'
+    if (
+      isNodeModulesPath(path, this.flavor) ||
+      isGlobalCachePath(path, configuration.denoDirs, this.flavor)
+    ) {
+      return 'package'
+    }
+    return 'local'
+  }
+
+  /** Reports `Deno.*` references in a local module of a browser bundle (L10). */
+  #reportDenoGlobals(
+    path: string,
+    code: string,
+    references: readonly DenoReference[],
+    mode: 'warn' | 'error',
+  ): void {
+    const message = denoGlobalsMessage(displayModule(path, this.options.cwd), code, references)
+    if (mode === 'error') {
+      throw new DenoPluginError('PLATFORM_INCOMPATIBLE', message, { specifier: path })
+    }
+    this.warnOnce(`deno-globals\0${path}`, message)
   }
 
   /** The files the host should watch. */

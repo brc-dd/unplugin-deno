@@ -5,11 +5,11 @@
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { stripVTControlCharacters } from 'node:util'
-import { describe, expect, it, onTestFinished } from 'vitest'
+import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Options } from '../../src/core/options.js'
 import type { BuildEntries, BuildResult } from '../helpers/build.js'
 import {
@@ -18,6 +18,7 @@ import {
   evaluateModule,
   installCssStyleSheet,
 } from '../helpers/build.js'
+import { denoBinary } from '../helpers/deno-binary.js'
 import { testDenoDirPath } from '../helpers/deno-dir.js'
 import type { HostName } from '../helpers/fixture.js'
 import type { TempProject } from '../helpers/temp-project.js'
@@ -44,6 +45,10 @@ interface HostOptions {
   /** Rolldown's `platform` (ignored for Rollup). */
   platform?: 'node' | 'browser' | 'neutral'
   cwd?: string
+  /** Write source maps next to the output. */
+  sourcemap?: boolean
+  /** More input options of the host (e.g. Rolldown `transform`, Rollup `jsx`). */
+  input?: Record<string, unknown>
 }
 
 /** Builds with `host`; the output directory is removed after the test. */
@@ -54,19 +59,64 @@ export async function build(
   options: Options = {},
   hostOptions: HostOptions = {},
 ): Promise<BuildResult> {
-  const { plugins = [], platform, cwd } = hostOptions
+  const { plugins = [], platform, cwd, sourcemap, input = {} } = hostOptions
+  const output = sourcemap === true ? { output: { sourcemap: true } } : {}
   const out =
     host === 'rolldown'
       ? await buildWithRolldown(root, entries, options, {
           plugins: plugins as never,
           ...(platform === undefined ? {} : { platform }),
           ...(cwd === undefined ? {} : { cwd }),
+          ...output,
+          ...input,
         })
       : await buildWithRollup(root, entries, cwd === undefined ? options : { cwd, ...options }, {
           plugins: plugins as never,
+          ...output,
+          ...input,
         })
   onTestFinished(() => out.dispose())
   return out
+}
+
+/** A plugin placed after unplugin-deno that keeps `node:` builtins external (for browser builds). */
+export function nodeExternalPlugin(): object {
+  return {
+    name: 'test-node-external',
+    resolveId(source: string) {
+      return source.startsWith('node:') ? { id: source, external: true } : null
+    },
+  }
+}
+
+/**
+ * Whether `text` contains the absolute path `path`, compared with `/` separators (Windows-safe,
+ * JSON-escaped backslashes included). A relative path that climbs to it from the process's working
+ * directory (`../../tmp/x`, as Rolldown's region comments in Vite do) does not count.
+ */
+export function containsAbsolutePath(text: string, path: string): boolean {
+  const haystack = slashAll(text)
+  const needle = slashAll(path)
+  for (let index = haystack.indexOf(needle); index !== -1;) {
+    if (haystack.slice(Math.max(0, index - 2), index) !== '..') return true
+    index = haystack.indexOf(needle, index + 1)
+  }
+  return false
+}
+
+/** `text` with `/` for `\` and JSON-escaped `\\`. */
+function slashAll(text: string): string {
+  return text.replaceAll('\\\\', '/').replaceAll('\\', '/')
+}
+
+/** The messages of the warnings a build logged whose text contains `part`. */
+export function warningsWith(out: { logs: Array<{ message: string }> }, part: string): string[] {
+  return out.logs.map((log) => log.message).filter((message) => message.includes(part))
+}
+
+/** The number of `import.meta.main` expressions in `code`. */
+export function importMetaMainCount(code: string): number {
+  return code.match(/import\.meta\.main/g)?.length ?? 0
 }
 
 /** A temporary copy of a fixture, removed after the test. */
@@ -179,6 +229,26 @@ export function coreSuite(host: SuiteHost): void {
       expect(chunk.imports).toContain('node:path')
       expect(chunk.moduleIds.some((id) => id.includes('closest_string.ts.js'))).toBe(true)
     })
+
+    it.skipIf(denoBinary.skipReason !== undefined)(
+      `builds the same output with the \`deno\` engine (${denoBinary.skipReason ?? 'Deno found'})`,
+      timeout,
+      async () => {
+        const project = await fixture('core-basic')
+        const out = await build(
+          host,
+          project.root,
+          project.manifest.entries,
+          { platform: 'node', engine: 'deno', denoBinary: denoBinary.binary },
+          { plugins: [rawQueryPlugin([])], platform: 'node' },
+        )
+        const { values } = await evaluateModule<{ values: Record<string, unknown> }>(out.entry)
+        expect(values).toMatchObject(expectedValues(project))
+        const chunk = entryChunk(out)
+        expect(chunk.imports.filter((id) => /^(?:jsr|npm|https?|data):/.test(id))).toEqual([])
+        expect(chunk.moduleIds.some((id) => id.includes('closest_string.ts.js'))).toBe(true)
+      },
+    )
   })
 
   describe.runIf(runs('core-import-map-precedence'))(`core-import-map-precedence (${host})`, () => {
@@ -302,10 +372,13 @@ export function coreSuite(host: SuiteHost): void {
 
       const map = JSON.parse(await readFile(`${mod}.map`, 'utf8')) as {
         sources: string[]
+        sourceRoot: string
         sourcesContent: string[]
         file: string
       }
-      expect(map.sources).toEqual(['https://jsr.io/@std/path/1.1.6/posix/mod.ts'])
+      // The URL as sourceRoot + sources (esbuild and other readers see the URL).
+      expect(map.sourceRoot).toBe('https://jsr.io/@std/path/1.1.6/posix/')
+      expect(map.sources).toEqual(['mod.ts'])
       expect(map.file).toBe('mod.ts.js')
       expect(map.sourcesContent[0]).toContain('export * from "./join.ts";')
 
@@ -333,6 +406,41 @@ export function coreSuite(host: SuiteHost): void {
       expect(mirrorLoads(second)).toEqual([])
       expect(generationDir(project.root)).toBe(generation)
     })
+
+    it(
+      'names mirrored sources next to the mirror file in output source maps',
+      timeout,
+      async () => {
+        const project = await fixture('core-remote-mirror')
+        const out = await build(
+          host,
+          project.root,
+          project.manifest.entries,
+          { platform: 'browser' },
+          { sourcemap: true },
+        )
+        const map = JSON.parse(await readFile(`${out.entry}.map`, 'utf8')) as {
+          sources: string[]
+          sourcesContent: string[]
+        }
+        const sources = map.sources.map((source) => source.replaceAll('\\', '/'))
+        const generation = generationDir(project.root).slice(-8)
+        const joinSource = sources.findIndex((source) =>
+          source.endsWith(
+            `node_modules/.unplugin-deno/${generation}/https/jsr.io/@std/path/1.1.6/posix/join.ts`,
+          ),
+        )
+        expect(joinSource).toBeGreaterThanOrEqual(0)
+        expect(map.sourcesContent[joinSource]).toContain('export function join(')
+        expect(
+          sources.some((source) =>
+            source.endsWith(`${generation}/https/deno.land/std@0.224.0/text/closest_string.ts`),
+          ),
+        ).toBe(true)
+        // Not mangled into paths such as `…/posix/https:/jsr.io/…`.
+        expect(sources.filter((source) => source.includes('https:'))).toEqual([])
+      },
+    )
   })
 
   describe.runIf(runs('core-attributes'))(`core-attributes (${host})`, () => {
@@ -376,6 +484,10 @@ export function coreSuite(host: SuiteHost): void {
           'license',
         )
         expect((await readFile(license, 'utf8')).startsWith('The MIT License')).toBe(true)
+        // No machine path in the output (region comments, chunk names).
+        for (const chunk of out.chunks) {
+          expect(containsAbsolutePath(chunk.code, project.root)).toBe(false)
+        }
       },
     )
   })
@@ -427,7 +539,10 @@ export function coreSuite(host: SuiteHost): void {
           platform: 'deno',
           bundle: ['npm:kleur'],
         })
-        expect(entryChunk(bundled).imports.toSorted()).toEqual(['jsr:@std/path@1.1.6', 'node:fs'])
+        expect(entryChunk(bundled).imports.toSorted()).toEqual([
+          'jsr:@std/path@1.1.6/posix',
+          'node:fs',
+        ])
         expect(slashed(entryChunk(bundled).moduleIds).some((id) => id.includes('/kleur/'))).toBe(
           true,
         )
@@ -464,6 +579,247 @@ export function coreSuite(host: SuiteHost): void {
       )
       const { values } = await evaluateModule<{ values: unknown }>(out.entry)
       expect(values).toEqual(expectedValues(project))
+    })
+  })
+
+  describe.runIf(runs('core-jsx-preact'))(`core-jsx-preact (${host})`, () => {
+    it('compiles local JSX with the deno.json settings (react-jsx, preact)', timeout, async () => {
+      const project = await fixture('core-jsx-preact')
+      const out = await build(host, project.root, project.manifest.entries, { platform: 'browser' })
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      const chunk = entryChunk(out)
+      expect(chunk.imports).toEqual([])
+      // `preact/jsx-runtime` resolved through the import map (`preact` → `npm:preact@^10`).
+      const ids = slashed(chunk.moduleIds)
+      expect(ids.some((id) => /\/preact\/10\.29\.8\/jsx-runtime\/dist\//.test(id))).toBe(true)
+      expect(warningsWith(out, 'precompile')).toEqual([])
+    })
+
+    it('follows react-jsxdev, the classic runtime and precompile', timeout, async () => {
+      const project = await fixture('core-jsx-preact')
+      const config = JSON.parse(await readFile(project.path('deno.json'), 'utf8')) as object
+      // [compilerOptions, whether the preact JSX runtime is bundled, whether it is the development
+      // one (its calls pass the source location)]
+      const variants = [
+        // Rollup has no development runtime: it compiles react-jsxdev like react-jsx.
+        [{ jsx: 'react-jsxdev', jsxImportSource: 'preact' }, true, host !== 'rollup'],
+        [{ jsx: 'react', jsxFactory: 'h', jsxFragmentFactory: 'Fragment' }, false, false],
+        [{ jsx: 'precompile', jsxImportSource: 'preact' }, true, false],
+      ] as const
+      for (const [compilerOptions, runtime, development] of variants) {
+        await writeFile(project.path('deno.json'), JSON.stringify({ ...config, compilerOptions }))
+        const out = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+        })
+        const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+        expect(values).toEqual(expectedValues(project))
+        const chunk = entryChunk(out)
+        // preact's jsx-dev-runtime export is the jsx-runtime file.
+        const ids = slashed(chunk.moduleIds)
+        expect(ids.some((id) => id.includes('/preact/10.29.8/jsx-runtime/'))).toBe(runtime)
+        expect(chunk.code.includes('lineNumber')).toBe(development)
+        expect(warningsWith(out, '"precompile"')).toHaveLength(
+          compilerOptions.jsx === 'precompile' ? 1 : 0,
+        )
+      }
+    })
+
+    it(
+      'leaves JSX the host config sets, and every JSX setting with jsx: host',
+      timeout,
+      async () => {
+        const project = await fixture('core-jsx-preact')
+        const classic =
+          host === 'rolldown'
+            ? { transform: { jsx: { runtime: 'classic', pragma: 'h', pragmaFrag: 'Fragment' } } }
+            : { jsx: { mode: 'classic', factory: 'h', fragment: 'Fragment' } }
+        const out = await build(
+          host,
+          project.root,
+          project.manifest.entries,
+          { platform: 'browser' },
+          { input: classic },
+        )
+        const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+        expect(values).toEqual(expectedValues(project))
+        expect(slashed(entryChunk(out).moduleIds).some((id) => id.includes('/jsx-runtime/'))).toBe(
+          false,
+        )
+        // With jsx: 'host' the deno.json settings are not applied: Rolldown uses React's runtime,
+        // and Rollup has no JSX option, so the JSX the TypeScript plugin preserved fails to parse.
+        const hostOnly = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          jsx: 'host',
+        }).then(
+          (result) => entryChunk(result).imports.join(' '),
+          (error: unknown) => String(error),
+        )
+        expect(hostOnly).toMatch(host === 'rolldown' ? /react\/jsx-runtime/ : /Error/)
+      },
+    )
+  })
+
+  describe.runIf(runs('core-import-meta-main'))(`core-import-meta-main (${host})`, () => {
+    it('replaces import.meta.main in modules that are not entries', timeout, async () => {
+      const project = await fixture('core-import-meta-main')
+      const out = await build(host, project.root, project.manifest.entries, { platform: 'browser' })
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      // The entry's own import.meta.main is kept.
+      expect(importMetaMainCount(entryChunk(out).code)).toBe(1)
+      const kept = await build(host, project.root, project.manifest.entries, {
+        platform: 'browser',
+        importMetaMain: false,
+      })
+      expect(importMetaMainCount(entryChunk(kept).code)).toBe(3)
+    })
+  })
+
+  describe.runIf(runs('core-env-inline'))(`core-env-inline (${host})`, () => {
+    it(
+      'inlines allowed variables for the browser from the process and .env files',
+      timeout,
+      async () => {
+        const project = await fixture('core-env-inline')
+        const files = project.manifest.expect?.files as Record<string, string>
+        for (const [name, text] of Object.entries(files)) await writeFile(project.path(name), text)
+        vi.stubEnv('PUBLIC_TARGET', 'from the process')
+        const out = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          env: { prefix: 'PUBLIC_' },
+          denoGlobals: 'off',
+        })
+        const mod = await evaluateModule<{ values: unknown; fromFile: () => unknown }>(out.entry)
+        expect(mod.values).toEqual(expectedValues(project))
+        expect(mod.fromFile()).toBeUndefined()
+        const { code } = entryChunk(out)
+        expect(code).not.toContain('PUBLIC_')
+        expect(code).toMatch(/Deno\.env\.get\(["']SECRET["']\)/)
+        expect(code).toContain('Deno.env.toObject()')
+        // Listed files replace the defaults.
+        const listed = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          env: { prefix: ['PUBLIC_'], files: ['app.env'] },
+          denoGlobals: 'off',
+        })
+        const listedModule = await evaluateModule<{ fromFile: () => unknown }>(listed.entry)
+        expect(listedModule.fromFile()).toBe('from app.env')
+        // Server platforms read their environment at runtime.
+        const server = await build(host, project.root, project.manifest.entries, {
+          platform: 'deno',
+          env: { prefix: 'PUBLIC_' },
+        })
+        expect(entryChunk(server).code).toMatch(/Deno\.env\.get\(["']PUBLIC_GREETING["']\)/)
+      },
+    )
+  })
+
+  describe.runIf(runs('core-deno-globals'))(`core-deno-globals (${host})`, () => {
+    it(
+      'reports Deno globals of local modules in browser bundles once, with the location',
+      timeout,
+      async () => {
+        const project = await fixture('core-deno-globals')
+        const expected = project.manifest.expect as { values: object; warning: string }
+        const out = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+        })
+        const { values } = await evaluateModule<{ values: object }>(out.entry)
+        expect(values).toMatchObject(expected.values)
+        expect(warningsWith(out, 'uses `Deno.')).toEqual([
+          expect.stringContaining(expected.warning),
+        ])
+        const quiet = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          denoGlobals: 'off',
+        })
+        expect(warningsWith(quiet, 'uses `Deno.')).toEqual([])
+        const server = await build(host, project.root, project.manifest.entries, {
+          platform: 'deno',
+        })
+        expect(warningsWith(server, 'uses `Deno.')).toEqual([])
+      },
+    )
+
+    it("fails the build with denoGlobals: 'error'", timeout, async () => {
+      const project = await fixture('core-deno-globals')
+      const expected = project.manifest.expect as { warning: string }
+      await expect(
+        build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          denoGlobals: 'error',
+        }),
+      ).rejects.toThrow(expected.warning)
+    })
+  })
+
+  describe.runIf(runs('core-checks'))(`core-checks (${host})`, () => {
+    it(
+      'warns about node: builtins in browser bundles and npm packages in two versions',
+      timeout,
+      async () => {
+        const project = await fixture('core-checks')
+        const expected = project.manifest.expect as { builtin: string; duplicate: string }
+        const out = await build(
+          host,
+          project.root,
+          project.manifest.entries,
+          { platform: 'browser' },
+          { plugins: [nodeExternalPlugin()], platform: 'browser' },
+        )
+        const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+        expect(values).toEqual(expectedValues(project))
+        expect(warningsWith(out, expected.builtin)).toHaveLength(1)
+        expect(warningsWith(out, expected.duplicate)).toEqual([
+          expect.stringContaining('(3.3.19, 5.1.16)'),
+        ])
+        const quiet = await build(
+          host,
+          project.root,
+          project.manifest.entries,
+          { platform: 'browser', checks: false },
+          { plugins: [nodeExternalPlugin()], platform: 'browser' },
+        )
+        expect(warningsWith(quiet, expected.builtin)).toEqual([])
+        expect(warningsWith(quiet, expected.duplicate)).toEqual([])
+      },
+    )
+  })
+
+  describe.runIf(runs('core-wasm'))(`core-wasm (${host})`, () => {
+    it('instantiates .wasm module imports like Deno, with their own imports', timeout, async () => {
+      const project = await fixture('core-wasm')
+      const out = await build(host, project.root, project.manifest.entries, { platform: 'browser' })
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      const chunk = entryChunk(out)
+      expect(chunk.imports).toEqual([])
+      expect(chunk.code).toContain('new WebAssembly.Instance(')
+      expect(slashed(chunk.moduleIds)).toContain(
+        project.path('src/offset.js').replaceAll('\\', '/'),
+      )
+    })
+  })
+
+  describe.runIf(runs('core-basic'))(`node_modules of another package manager (${host})`, () => {
+    it('warns when Deno manages a node_modules pnpm installed', timeout, async () => {
+      const project = await fixture('core-basic')
+      const config = JSON.parse(await readFile(project.path('deno.json'), 'utf8')) as object
+      await writeFile(
+        project.path('deno.json'),
+        JSON.stringify({ ...config, nodeModulesDir: 'auto' }),
+      )
+      await mkdir(project.path('node_modules'), { recursive: true })
+      await writeFile(project.path('node_modules/.modules.yaml'), 'layoutVersion: 5\n')
+      const out = await build(
+        host,
+        project.root,
+        project.manifest.entries,
+        { platform: 'node' },
+        { plugins: [rawQueryPlugin([])], platform: 'node' },
+      )
+      expect(warningsWith(out, 'was installed by pnpm')).toHaveLength(1)
     })
   })
 

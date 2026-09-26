@@ -30,7 +30,7 @@ export type {
 export type { DenoConfig, JsxSettings, MinimumDependencyAge } from './deno-config.js'
 export type { ImportMapMatch, ImportMapResolver } from './import-map.js'
 export type { Lockfile, UnsupportedLockfile } from './lockfile.js'
-export type { NodeModulesInfo, NodeModulesLayout } from './node-modules.js'
+export type { ForeignPackageManager, NodeModulesInfo, NodeModulesLayout } from './node-modules.js'
 
 /** Options of {@link loadProject}. */
 export interface LoadProjectOptions extends DiscoverOptions {

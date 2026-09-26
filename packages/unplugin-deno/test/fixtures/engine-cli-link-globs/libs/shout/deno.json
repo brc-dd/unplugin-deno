@@ -1,0 +1,5 @@
+{
+  "name": "@fixture/shout",
+  "version": "0.3.0",
+  "exports": { ".": "./mod.ts", "./loud": "./loud.ts" }
+}

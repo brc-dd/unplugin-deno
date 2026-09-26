@@ -1,11 +1,13 @@
 /**
  * The engine contract: every engine implementation must pass these tests on the `engine-*`
  * fixtures (docs/architecture.md §4.1). Remote fixtures download into the shared test DENO_DIR on
- * their first run and are served from it afterwards.
+ * their first run and are served from it afterwards. The `deno` engine's run is skipped (with the
+ * reason in its name) when the `deno` binary is missing or older than 2.8.3.
  */
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { denoBinary } from '../../test/helpers/deno-binary.js'
 import { denoDir } from '../../test/helpers/deno-dir.js'
 import { normalize } from '../../test/helpers/normalize.js'
 import { runtime } from '../../test/helpers/runtime.js'
@@ -14,6 +16,7 @@ import { tempProject } from '../../test/helpers/temp-project.js'
 import type { ErrorCode } from '../diagnostics/errors.js'
 import { isDenoPluginError } from '../diagnostics/errors.js'
 import { createSilentLogger } from '../diagnostics/logger.js'
+import { denoCliEngineFactory } from './deno-cli/engine.js'
 import { loaderEngineFactory } from './loader/engine.js'
 import type {
   Engine,
@@ -25,7 +28,11 @@ import type {
   ResolvedModule,
 } from './types.js'
 
-const factories: EngineFactory[] = [loaderEngineFactory]
+/** Every engine factory, with the reason its contract run is skipped in this environment. */
+const engines: ReadonlyArray<{ factory: EngineFactory; skipReason: string | undefined }> = [
+  { factory: loaderEngineFactory, skipReason: undefined },
+  { factory: denoCliEngineFactory, skipReason: denoBinary.skipReason },
+]
 
 const JSR_PATH = 'https://jsr.io/@std/path/1.1.6/mod.ts'
 const STD_COLORS = 'https://deno.land/std@0.224.0/fmt/colors.ts'
@@ -58,6 +65,7 @@ async function createEngine(
     conditions: [],
     cachedOnly: false,
     logger: createSilentLogger(),
+    denoBinary: denoBinary.binary,
     ...options,
   })
 }
@@ -101,7 +109,22 @@ function portable(module: ResolvedModule, temp: TempProject): unknown {
   return walk(module)
 }
 
-describe.each(factories)(`$kind engine contract on ${runtime}`, (factory) => {
+for (const { factory, skipReason } of engines) {
+  describe.skipIf(skipReason !== undefined)(
+    `${factory.kind} engine contract on ${runtime}${skipReason === undefined ? '' : ` (skipped: ${skipReason})`}`,
+    () => {
+      contract(factory)
+    },
+  )
+}
+
+/** A path in the test DENO_DIR's npm cache, normalised (see test/helpers/normalize.ts). */
+function cachedNpmFile(file: string | undefined): string {
+  return `<deno-dir>/npm/registry.npmjs.org/${file ?? ''}`
+}
+
+/** The contract tests for one engine factory. */
+function contract(factory: EngineFactory): void {
   describe('engine-basic', () => {
     let temp: TempProject
     let engine: Engine
@@ -267,7 +290,10 @@ describe.each(factories)(`$kind engine contract on ${runtime}`, (factory) => {
       expect(loaded.map?.sources).toEqual([JSR_PATH])
       expect(loaded.map?.sourcesContent?.[0]).toContain('export * from "./basename.ts"')
       expect(loaded.map?.mappings).not.toBe('')
-      expect(new TextDecoder().decode(loaded.bytes)).toContain('sourceMappingURL=data:')
+      // The loader keeps its inline source map in the bytes; `deno transpile` writes none.
+      const bytes = new TextDecoder().decode(loaded.bytes)
+      expect(bytes.startsWith(loaded.code)).toBe(true)
+      expect(bytes.includes('sourceMappingURL=data:')).toBe(factory.kind === 'loader')
     })
 
     it('transpiles TypeScript and keeps text loads unchanged', async () => {
@@ -615,4 +641,48 @@ describe.each(factories)(`$kind engine contract on ${runtime}`, (factory) => {
       },
     )
   })
-})
+
+  describe('engine-npm-dependencies', () => {
+    it(
+      'resolves relative, bare and builtin imports inside global-cache npm packages',
+      { timeout: 120_000 },
+      async () => {
+        await using temp = await tempProject('engine-npm-dependencies')
+        const expected = temp.manifest.expect as Record<string, string>
+        const cached = cachedNpmFile
+        await using engine = await createEngine(factory, projectOf(temp, 'none'))
+        const main = temp.url('src/main.ts')
+        expect(await engine.addEntrypoints([main])).toEqual([])
+        // The `browser` field wins on the browser platform (there are no `exports`).
+        const debug = await engine.resolve('debug', main, 'import')
+        expect(normalize(debug.path ?? '')).toBe(cached(expected.browser))
+        expect(debug.npm).toMatchObject({ name: 'debug', version: '4.4.3', subpath: '' })
+        // `require('./common')`: a `.js` extension is added.
+        const common = await engine.resolve('./common', debug.url, 'require')
+        expect(normalize(common.path ?? '')).toBe(cached(expected.common))
+        expect(common.npm).toMatchObject({ name: 'debug', subpath: '/src/common.js' })
+        // A dependency of the package, whose `main` (`./index`) has no extension.
+        const ms = await engine.resolve('ms', common.url, 'require')
+        expect(ms).toMatchObject({
+          kind: 'npm',
+          npm: { name: 'ms', version: '2.1.3', subpath: '' },
+        })
+        expect(normalize(ms.path ?? '')).toBe(cached(expected.ms))
+        expect(await engine.resolve('tty', common.url, 'require')).toEqual({
+          kind: 'node',
+          url: 'node:tty',
+          mediaType: 'Unknown',
+        })
+        const missing = await rejection(engine.resolve('not-a-dependency', common.url, 'import'))
+        expectCode(missing, 'RESOLVE_NOT_FOUND')
+        expect(missing).toMatchObject({ isOptionalDependency: false })
+        await using node = await createEngine(factory, projectOf(temp, 'none'), {
+          platform: 'node',
+        })
+        expect(normalize((await node.resolve('debug', main, 'import')).path ?? '')).toBe(
+          cached(expected.node),
+        )
+      },
+    )
+  })
+}

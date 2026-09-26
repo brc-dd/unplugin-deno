@@ -144,7 +144,13 @@ export async function buildWithVite(
       ...(ssr
         ? { ssr: true, [bundlerKey]: { input, output } }
         : {
-            lib: { entry: input, formats: ['es'], fileName: (_format, name) => `${name}.js` },
+            lib: {
+              entry: input,
+              formats: ['es'],
+              fileName: (_format, name) => `${name}.js`,
+              // Fixtures have no package.json name to derive a CSS file name from.
+              cssFileName: 'style',
+            },
             [bundlerKey]: { output },
           }),
     },

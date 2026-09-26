@@ -39,6 +39,11 @@ export const ERROR_CODES = [
   'ENGINE_UNAVAILABLE',
   /** A module has a media type the host cannot handle. */
   'UNSUPPORTED_MEDIA_TYPE',
+  /**
+   * A module uses an API its platform lacks: `Deno.*` in a browser bundle with
+   * `denoGlobals: 'error'`.
+   */
+  'PLATFORM_INCOMPATIBLE',
 ] as const
 
 /** A stable error code; see {@link ERROR_CODES}. */

@@ -1,0 +1,11 @@
+{
+  "title": "Engine contract: imports inside npm packages of the global cache (debug requires ./common and its dependency ms, whose main has no extension), and the browser field on the browser platform",
+  "entries": ["src/main.ts"],
+  "hosts": [],
+  "expect": {
+    "browser": "debug/4.4.3/src/browser.js",
+    "node": "debug/4.4.3/src/index.js",
+    "common": "debug/4.4.3/src/common.js",
+    "ms": "ms/2.1.3/index.js"
+  }
+}

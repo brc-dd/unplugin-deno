@@ -6,6 +6,7 @@
  * @module
  */
 import type { BuildOptions } from 'esbuild'
+import type { JsxTransform } from '../../core/jsx.js'
 import type { ResolvedOptions } from '../../core/options.js'
 import type { StateHints } from '../../core/state.js'
 
@@ -69,4 +70,69 @@ export function buildOptions(base: ResolvedOptions, packagesExternal: boolean): 
   const external = [...base.external]
   for (const pattern of PACKAGE_PATTERNS) if (!external.includes(pattern)) external.push(pattern)
   return { ...base, external, pinExternals: base.pinExternals ?? true }
+}
+
+/** esbuild's JSX options; any of them set (or in `tsconfigRaw`) means JSX is configured. */
+const JSX_OPTIONS = ['jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev'] as const
+
+/** The `tsconfig` JSX keys esbuild reads. */
+const TSCONFIG_JSX_KEYS = ['jsx', 'jsxFactory', 'jsxFragmentFactory', 'jsxImportSource'] as const
+
+/** Whether the build options configure JSX (then the `deno.json` settings are not applied). */
+export function configuresJsx(options: BuildOptions): boolean {
+  if (JSX_OPTIONS.some((key) => options[key] !== undefined)) return true
+  const raw = options.tsconfigRaw
+  const tsconfig: unknown = typeof raw === 'string' ? parseJsonObject(raw) : raw
+  const compilerOptions: unknown =
+    typeof tsconfig === 'object' && tsconfig !== null
+      ? (tsconfig as { compilerOptions?: unknown }).compilerOptions
+      : undefined
+  return (
+    typeof compilerOptions === 'object' &&
+    compilerOptions !== null &&
+    TSCONFIG_JSX_KEYS.some((key) => (compilerOptions as Record<string, unknown>)[key] !== undefined)
+  )
+}
+
+function parseJsonObject(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Applies a JSX transform of `deno.json` to esbuild's build options (docs/architecture.md §5.11):
+ * `jsx: 'automatic'` with `jsxImportSource` (and `jsxDev` for `react-jsxdev`), or
+ * `jsx: 'transform'` with `jsxFactory` and `jsxFragment`. esbuild reads build options changed in a
+ * plugin's `setup`.
+ */
+export function applyJsx(options: BuildOptions, transform: JsxTransform): void {
+  if (transform.runtime === 'classic') {
+    options.jsx = 'transform'
+    options.jsxFactory = transform.factory
+    options.jsxFragment = transform.fragment
+    return
+  }
+  options.jsx = 'automatic'
+  options.jsxImportSource = transform.importSource
+  if (transform.development) options.jsxDev = true
+}
+
+/**
+ * Adds `process.env.<KEY>` entries for the inlined environment variables to esbuild's `define`
+ * (L9: esbuild has no transform hook, so `Deno.env.get()` reads are not inlined), keeping the
+ * entries the build defines itself. Keys that are not identifiers cannot be `define` keys.
+ */
+export function defineEnv(options: BuildOptions, entries: ReadonlyArray<[string, string]>): void {
+  const define = { ...options.define }
+  let changed = false
+  for (const [key, value] of entries) {
+    const name = `process.env.${key}`
+    if (!/^[A-Za-z_$][\w$]*$/.test(key) || define[name] !== undefined) continue
+    define[name] = JSON.stringify(value)
+    changed = true
+  }
+  if (changed) options.define = define
 }

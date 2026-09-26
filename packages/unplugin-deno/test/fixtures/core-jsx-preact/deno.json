@@ -1,0 +1,10 @@
+{
+  "imports": {
+    "preact": "npm:preact@^10",
+    "preact-render-to-string": "npm:preact-render-to-string@^6"
+  },
+  "compilerOptions": {
+    "jsx": "react-jsx",
+    "jsxImportSource": "preact"
+  }
+}

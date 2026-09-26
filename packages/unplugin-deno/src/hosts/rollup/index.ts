@@ -6,7 +6,8 @@
  * generic transform pre-pass stays on (it gives `x` imported as `text` and as `bytes` distinct
  * sources); the `resolveId` path covers code the pre-pass cannot read (JSX). Rollup has no
  * `moduleType`; mirrored code is JavaScript and local TypeScript is the user's TypeScript plugin's
- * job.
+ * job. The `deno.json` JSX settings become Rollup's `jsx` option unless it is set (§5.11): it
+ * applies to JSX the TypeScript plugin preserves.
  *
  * @module
  */
@@ -14,16 +15,21 @@ import type { Plugin as RollupPlugin } from 'rollup'
 import { isDenoType } from '../../core/attributes.js'
 import { isOwnedSpecifier, withDenoType } from '../../core/id.js'
 import type { PluginState } from '../../core/state.js'
-import { toRollupResult } from '../shared.js'
+import { rollupJsxOptions, toRollupResult } from '../shared.js'
 
 /** The Rollup-specific hooks of the plugin (merged over the generic ones by unplugin). */
 export function rollupHooks(state: PluginState): Partial<RollupPlugin> {
   const loadFilter = { id: state.loadFilter() }
   return {
-    options(inputOptions) {
+    async options(inputOptions) {
       state.setLogTarget(this)
       state.setHints({ input: inputOptions.input as never, version: this.meta.rollupVersion })
-      return null
+      if (inputOptions.jsx !== undefined) return null
+      await state.prepare()
+      const decision = state.jsxTransform('Rollup')
+      return decision === null
+        ? null
+        : { ...inputOptions, jsx: rollupJsxOptions(decision.transform) }
     },
     async resolveId(source, importer, options) {
       state.setLogTarget(this)

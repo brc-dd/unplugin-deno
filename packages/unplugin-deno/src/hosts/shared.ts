@@ -6,7 +6,10 @@
  * @module
  */
 import type { UnpluginContextMeta } from 'unplugin'
+import type { AstLang, AstParser } from '../core/attributes.js'
+import type { JsxTransform } from '../core/jsx.js'
 import type { ResolveOutcome } from '../core/resolve.js'
+import type { TransformContext } from '../core/state.js'
 import { withDenoType } from '../core/id.js'
 import type { PlatformHint } from '../core/platform.js'
 import type { Logger } from '../diagnostics/logger.js'
@@ -135,6 +138,101 @@ export async function toRollupResult(
       if (resolved === null || resolved === undefined || resolved.external) return null
       return { id: withDenoType(resolved.id, outcome.denoType) }
     }
+  }
+}
+
+/** The members of a Rollup-family `transform` context the plugin reads (untyped by unplugin). */
+export interface TransformHostContext {
+  parse?: ((code: string, options: { lang: AstLang }) => unknown) | undefined
+  getModuleInfo?: ((id: string) => { isEntry?: boolean } | null) | undefined
+}
+
+/**
+ * The host facts of a Rollup-family `transform` call (docs/architecture.md §5.10): the host's
+ * parser (Rolldown and Vite 8 parse TypeScript and JSX with oxc; Rollup and Vite 7 only
+ * JavaScript) and whether the module is an entry of the build (`this.getModuleInfo(id).isEntry`).
+ */
+export function transformContext(context: TransformHostContext, id: string): TransformContext {
+  const { parse, getModuleInfo } = context
+  const parser: AstParser | undefined =
+    typeof parse === 'function' ? (text, lang) => parse.call(context, text, { lang }) : undefined
+  return {
+    parse: parser,
+    isEntry: () => {
+      try {
+        return getModuleInfo?.call(context, id)?.isEntry === true
+      } catch {
+        return false
+      }
+    },
+  }
+}
+
+/**
+ * A `deno.json` {@link JsxTransform} as Oxc's `jsx` options (docs/architecture.md §5.11): Vite 8
+ * `oxc.jsx` and Rolldown `transform.jsx`. The classic runtime turns development mode off: Vite
+ * enables it outside production, and it would pass `__source`/`__self` props to the `jsxFactory`
+ * (Deno never does). The automatic runtime keeps Vite's default unless `react-jsxdev` asks for it.
+ */
+export function oxcJsxOptions(transform: JsxTransform): {
+  runtime: 'automatic' | 'classic'
+  importSource?: string
+  development?: boolean
+  pragma?: string
+  pragmaFrag?: string
+} {
+  if (transform.runtime === 'classic') {
+    return {
+      runtime: 'classic',
+      pragma: transform.factory,
+      pragmaFrag: transform.fragment,
+      development: false,
+    }
+  }
+  return {
+    runtime: 'automatic',
+    importSource: transform.importSource,
+    ...(transform.development ? { development: true } : {}),
+  }
+}
+
+/** A {@link JsxTransform} as esbuild's JSX options (Vite 7's `esbuild` config, esbuild). */
+export function esbuildJsxOptions(transform: JsxTransform): {
+  jsx: 'automatic' | 'transform'
+  jsxImportSource?: string
+  jsxDev?: boolean
+  jsxFactory?: string
+  jsxFragment?: string
+} {
+  if (transform.runtime === 'classic') {
+    return { jsx: 'transform', jsxFactory: transform.factory, jsxFragment: transform.fragment }
+  }
+  return {
+    jsx: 'automatic',
+    jsxImportSource: transform.importSource,
+    ...(transform.development ? { jsxDev: true } : {}),
+  }
+}
+
+/**
+ * A {@link JsxTransform} as Rollup's `jsx` option: `jsxImportSource` is the runtime module
+ * (`<source>/jsx-runtime`) and `factory`/`importSource` the `createElement` Rollup falls back to
+ * for a `key` after a spread. Rollup has no development runtime: `react-jsxdev` compiles like
+ * `react-jsx`. The classic runtime uses global factories, as in Deno.
+ */
+export function rollupJsxOptions(
+  transform: JsxTransform,
+):
+  | { mode: 'automatic'; factory: string; importSource: string; jsxImportSource: string }
+  | { mode: 'classic'; factory: string; fragment: string } {
+  if (transform.runtime === 'classic') {
+    return { mode: 'classic', factory: transform.factory, fragment: transform.fragment }
+  }
+  return {
+    mode: 'automatic',
+    factory: 'createElement',
+    importSource: transform.importSource,
+    jsxImportSource: `${transform.importSource}/jsx-runtime`,
   }
 }
 

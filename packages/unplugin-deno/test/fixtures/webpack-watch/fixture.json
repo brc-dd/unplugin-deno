@@ -1,0 +1,10 @@
+{
+  "title": "Watch mode on webpack and Rspack: a changed deno.json import map is reloaded, and an edited with { type: \"text\" } target rebuilds its marker module",
+  "entries": ["src/main.ts"],
+  "hosts": ["webpack", "rspack"],
+  "expect": {
+    "first": { "greeting": "hello", "note": "first\n" },
+    "mapped": { "greeting": "goodbye", "note": "first\n" },
+    "edited": { "greeting": "goodbye", "note": "second\n" }
+  }
+}

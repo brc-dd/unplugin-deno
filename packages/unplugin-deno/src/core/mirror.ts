@@ -3,7 +3,17 @@
  * modules are written as real files under `<cacheDir>/<generation>/`, transpiled by the engine,
  * with their import specifiers rewritten so hosts resolve them natively (relative paths between
  * mirror files, pinned `npm:` specifiers, `node:` builtins, `?deno-type=` markers), a sibling
- * source map (`sources: [url]`) and a `manifest.json` that maps URLs to files and back.
+ * source map and a `manifest.json` that maps URLs to files and back.
+ *
+ * Source maps (L2, L11): the map on disk names the original as `sourceRoot` + `sources` = the URL
+ * (`sourceRoot: "https://jsr.io/@std/path/1.1.6/posix/"`, `sources: ["join.ts"]`), which esbuild
+ * (it reads the linked map) and other standard readers turn into the URL. Rollup, Rolldown and
+ * Vite resolve `sources` against the module's directory as paths, so a URL there came out mangled
+ * (`…/posix/https:/jsr.io/…`); the plugin's `load` hands them the map with `sources` set to the
+ * file name next to the mirror file ({@link mirrorSourceName}) and no `sourceRoot`, which they
+ * turn into `node_modules/.unplugin-deno/<generation>/https/jsr.io/…/join.ts` (verified with Vite
+ * 8.3.1, Rolldown 1.2.11, Rollup 4.63.5 and esbuild 0.28.2). `data:` URLs keep `sources: [url]`
+ * on disk. npm files of Deno's global cache are not mirrored and keep their `DENO_DIR` paths.
  *
  * @module
  */
@@ -219,6 +229,52 @@ function finalName(name: string, kind: MirrorKind): string {
   if (kind === 'module') return JS_NAME.test(name) ? name : `${name}.js`
   const extension = JS_NAME.exec(name)?.[0]
   return extension === undefined ? name : `${name.slice(0, -extension.length)}~raw${extension}`
+}
+
+/**
+ * The `sources` and `sourceRoot` of a mirror file's source map on disk (see the module
+ * documentation): for an `http(s):` URL with a file name, `sourceRoot` is the URL up to its last
+ * path segment and `sources` that segment with the query (`sourceRoot + sources[0]` is the URL
+ * without its fragment); other URLs (`data:`, directory URLs) are `sources: [url]`.
+ */
+export function mirrorMapSources(url: string): { sources: string[]; sourceRoot?: string } {
+  const parsed = URL.parse(url)
+  if (parsed === null || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
+    return { sources: [url] }
+  }
+  const slash = parsed.pathname.lastIndexOf('/')
+  const name = parsed.pathname.slice(slash + 1)
+  if (name === '') return { sources: [url] }
+  return {
+    sourceRoot: `${parsed.origin}${parsed.pathname.slice(0, slash + 1)}`,
+    sources: [`${name}${parsed.search}`],
+  }
+}
+
+/**
+ * The source name the plugin's `load` gives Rollup-family hosts for a mirror code file: its file
+ * name without the `.js` the mirror appended to TypeScript and JSX names (`join.ts.js` →
+ * `join.ts`), so the hosts' output maps name `…/https/jsr.io/…/posix/join.ts` next to the mirror
+ * file. JavaScript names stay as they are (`react.js`, `util.mjs`).
+ */
+export function mirrorSourceName(path: string, flavor: PathFlavor = HOST_PATH_FLAVOR): string {
+  const name = (flavor === 'win32' ? win32 : posix).basename(splitQuery(path).base)
+  return /\.(?:[cm]?tsx?|jsx)\.js$/i.test(name) ? name.slice(0, -'.js'.length) : name
+}
+
+/**
+ * The map of the mirror code file at `path` as the plugin's `load` returns it to Rollup-family
+ * hosts: `sources` = [{@link mirrorSourceName}] without `sourceRoot` (they would resolve a URL as
+ * a path), `sourcesContent` kept.
+ */
+export function hostMirrorMap(
+  map: EncodedSourceMap,
+  path: string,
+  flavor: PathFlavor = HOST_PATH_FLAVOR,
+): EncodedSourceMap {
+  if (map.sources.length !== 1) return map
+  const { sourceRoot: _sourceRoot, ...rest } = map
+  return { ...rest, sources: [mirrorSourceName(path, flavor)] }
 }
 
 /**
@@ -794,7 +850,8 @@ class MirrorImpl implements Mirror {
 
 /**
  * The source map of a rewritten module: our edits composed with the engine's transpile map, so it
- * points at the original source (`sources: [url]` with `sourcesContent`).
+ * points at the original source (the URL as `sourceRoot` + `sources`, {@link mirrorMapSources},
+ * with `sourcesContent`).
  */
 function composeMaps(magic: MagicString, loaded: LoadedModule, file: string): EncodedSourceMap {
   let result
@@ -808,10 +865,16 @@ function composeMaps(magic: MagicString, loaded: LoadedModule, file: string): En
       () => null,
     )
   }
+  // One module, one source: the URL the engine loaded (as its map names it).
+  const [only] = result.sources
+  const sources =
+    result.sources.length === 1 && typeof only === 'string'
+      ? mirrorMapSources(only)
+      : { sources: result.sources.map((source) => source ?? '') }
   return {
     version: 3,
     file,
-    sources: [...result.sources],
+    ...sources,
     sourcesContent: [...(result.sourcesContent ?? [])],
     names: [...result.names],
     mappings: result.mappings as string,

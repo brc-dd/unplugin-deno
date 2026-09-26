@@ -1,0 +1,13 @@
+{
+  "title": "With the web preset taken over, remote URLs in CSS (@import, url()) and fragment references stay external as the preset keeps them, while the https: module import is resolved from the mirror",
+  "entries": ["src/main.ts"],
+  "hosts": ["webpack", "rspack"],
+  "expect": {
+    "values": { "closest": "help" },
+    "css": [
+      "https://fonts.googleapis.com/css2?family=Roboto",
+      "https://example.com/bg.png",
+      "#gradient"
+    ]
+  }
+}

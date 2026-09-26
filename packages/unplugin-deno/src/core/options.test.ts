@@ -42,6 +42,7 @@ describe('resolveOptions', () => {
       pinExternals: null,
       emitDenoConfig: false,
       importAttributes: true,
+      wasm: true,
       importMetaMain: true,
       env: false,
       denoGlobals: null,
@@ -152,10 +153,43 @@ describe('resolveOptions', () => {
       lockfile: false,
     })
     expect(resolveWith({ checks: true }).checks).toEqual(resolveWith({}).checks)
-    expect(resolveWith({ env: {} }).env).toEqual({ prefix: [], allow: [], files: [] })
+    // `files: null` stands for the default files (`.env`, `.env.local`).
+    expect(resolveWith({ env: {} }).env).toEqual({
+      prefix: [],
+      allow: [],
+      files: null,
+      server: false,
+    })
     expect(resolveWith({ env: { prefix: ['A_', 'B_'] } }).env).toMatchObject({
       prefix: ['A_', 'B_'],
     })
+    expect(
+      resolveWith({ env: { prefix: 'PUBLIC_', allow: ['MODE'], files: [], server: true } }).env,
+    ).toEqual({ prefix: ['PUBLIC_'], allow: ['MODE'], files: [], server: true })
+  })
+
+  it('rejects env settings that would inline every variable', () => {
+    expect(() => resolveWith({ env: { prefix: '' } })).toThrow(
+      expect.objectContaining({
+        code: 'OPTIONS_INVALID',
+        message: expect.stringContaining('env.prefix'),
+      }),
+    )
+    expect(() => resolveWith({ env: { prefix: ['PUBLIC_', ''] } })).toThrow(
+      expect.objectContaining({ code: 'OPTIONS_INVALID' }),
+    )
+    expect(() => resolveWith({ env: { allow: [''] } })).toThrow(
+      expect.objectContaining({
+        code: 'OPTIONS_INVALID',
+        message: expect.stringContaining('env.allow'),
+      }),
+    )
+    expect(() => resolveWith({ env: { server: 'yes' } as never })).toThrow(
+      expect.objectContaining({
+        code: 'OPTIONS_INVALID',
+        message: expect.stringContaining('env.server'),
+      }),
+    )
   })
 
   it('reads DEBUG unless debug is explicit', () => {
@@ -190,6 +224,9 @@ describe('resolveOptions', () => {
     [{ checks: { lockfile: 1 } }, 'Invalid option `checks.lockfile`'],
     [{ emitDenoConfig: '' }, 'Invalid option `emitDenoConfig`'],
     [{ denoGlobals: 'throw' }, 'Invalid option `denoGlobals`'],
+    [{ wasm: 'yes' }, 'Invalid option `wasm`: expected a boolean'],
+    [{ importMetaMain: 1 }, 'Invalid option `importMetaMain`: expected a boolean'],
+    [{ jsx: 'preact' }, "Invalid option `jsx`: expected one of 'auto', 'host', 'deno'"],
     [{ resolve: 'x' }, 'Invalid option `resolve`: expected a function'],
   ])('rejects %j', (options, message) => {
     let error: unknown

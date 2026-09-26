@@ -1,5 +1,5 @@
 /**
- * Engine selection: one factory per {@link EngineKind}.
+ * Engine selection: one factory per {@link EngineKind} (`select.ts` decides which kind to use).
  *
  * @module
  */
@@ -16,8 +16,9 @@ export const ENGINE_FACTORIES: Readonly<Record<EngineKind, EngineFactory>> = Obj
 /**
  * Creates an engine of the given kind.
  *
- * @throws {DenoPluginError} `ENGINE_UNAVAILABLE` for the `deno` engine (M2) or when the vendored
- *   loader cannot be loaded; `CONFIG_INVALID` when the loader rejects the project configuration.
+ * @throws {DenoPluginError} `ENGINE_UNAVAILABLE` when the vendored loader cannot be loaded, or
+ *   for the `deno` engine when the Deno binary (`options.denoBinary`, default `deno`) is missing
+ *   or older than 2.8.3; `CONFIG_INVALID` when the loader rejects the project configuration.
  */
 export function createEngine(kind: EngineKind, options: EngineCreateOptions): Promise<Engine> {
   return ENGINE_FACTORIES[kind].create(options)

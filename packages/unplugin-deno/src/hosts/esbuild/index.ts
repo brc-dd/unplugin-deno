@@ -15,7 +15,11 @@
  *   local `.css` files (which esbuild rejects), become modules synthesised in the `unplugin-deno`
  *   namespace; esbuild loads local `text`/`bytes` imports itself (esbuild ≥ 0.28 / 0.25.11);
  * - externals are `{ external: true }` results; esbuild's own `external` option is left to esbuild
- *   and `packages: 'external'` keeps `npm:`/`jsr:` imports external and pinned.
+ *   and `packages: 'external'` keeps `npm:`/`jsr:` imports external and pinned;
+ * - `setup` applies the `deno.json` JSX settings (unless the build sets JSX) and defines the
+ *   inlined `process.env.<KEY>` variables (§5.10, §5.11); the plugin loads `.wasm` module imports
+ *   (§5.12) and the mirror files that contain `import.meta.main`, replaced by `false` (esbuild has
+ *   no transform hook, so local files keep theirs).
  *
  * @module
  */
@@ -31,6 +35,7 @@ import type {
   PluginBuild,
 } from 'esbuild'
 import { isDenoType } from '../../core/attributes.js'
+import { inlinesEnv } from '../../core/env.js'
 import { readDenoType, splitQuery, withDenoType } from '../../core/id.js'
 import type { NpmRedirectOutcome } from '../../core/npm.js'
 import { isGlobalCachePath, isNodeModulesPath } from '../../core/npm.js'
@@ -39,10 +44,20 @@ import type { HostMarkerOutcome, ResolveOutcome } from '../../core/resolve.js'
 import { packageJsonDependencyNames, resolveIdFilter } from '../../core/resolve.js'
 import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState, StateHints } from '../../core/state.js'
+import { WASM_MODULE_ID_FILTER } from '../../core/wasm.js'
 import { DenoPluginError } from '../../diagnostics/errors.js'
 import { externalMatcher } from './external.js'
 import { toMessage, WarningBuffer } from './messages.js'
-import { buildOptions, entryList, hintsFor, settingsKey } from './options.js'
+import { loadMirrorModule } from './mirror.js'
+import {
+  applyJsx,
+  buildOptions,
+  configuresJsx,
+  defineEnv,
+  entryList,
+  hintsFor,
+  settingsKey,
+} from './options.js'
 import { displayPath, virtualDisplayPath } from './paths.js'
 import type { WatchSnapshot } from './snapshot.js'
 import { changedFile, takeSnapshot } from './snapshot.js'
@@ -98,6 +113,8 @@ interface BuildContext {
   settings: string
   packagesExternal: boolean
   entries: string[]
+  /** Mirror files resolved as entry points (they keep `import.meta.main`). */
+  entryPaths: Set<string>
   /** Between this build's `onStart` and `onEnd`. */
   running: boolean
   /** `onStart` reported an error: owned imports are left alone until the build ends. */
@@ -177,6 +194,7 @@ async function setup(state: PluginState, shared: Shared, build: PluginBuild): Pr
     settings: settingsKey(options),
     packagesExternal: options.packages === 'external',
     entries: entryList(options.entryPoints),
+    entryPaths: new Set(),
     running: false,
     failed: false,
   }
@@ -195,6 +213,7 @@ async function setup(state: PluginState, shared: Shared, build: PluginBuild): Pr
     }
   }
   const filters = filtersFor(state, loaded)
+  if (loaded) await configureBuild(context)
   const isExternal = externalMatcher(options.external)
   const resolveOwned = (args: OnResolveArgs): Promise<OnResolveResult | undefined> =>
     onResolve(context, args, isExternal)
@@ -212,7 +231,39 @@ async function setup(state: PluginState, shared: Shared, build: PluginBuild): Pr
     )
   }
   build.onLoad({ filter: /.*/, namespace: NAMESPACE }, (args) => onLoad(context, args))
+  // `.wasm` module imports, unless the build gives `.wasm` a loader of its own (§5.12).
+  if (state.options.wasm && options.loader?.['.wasm'] === undefined) {
+    build.onLoad({ filter: WASM_MODULE_ID_FILTER }, (args) => onLoadWasm(context, args))
+  }
+  if (loaded && state.options.importMetaMain) {
+    const [mirror] = state.loadFilter()
+    if (mirror !== undefined) {
+      build.onLoad({ filter: mirror }, async (args) =>
+        args.namespace === 'file' && !context.entryPaths.has(args.path)
+          ? loadMirrorModule(args.path)
+          : undefined,
+      )
+    }
+  }
   build.onEnd(() => onEnd(context))
+}
+
+/**
+ * The build options the project implies, set while esbuild still reads them (in `setup`): the
+ * `deno.json` JSX settings unless the build configures JSX (§5.11), and the inlined environment
+ * variables as `process.env.<KEY>` definitions (§5.10). A context keeps them for its rebuilds.
+ */
+async function configureBuild(context: BuildContext): Promise<void> {
+  const { state, build } = context
+  const options = build.initialOptions
+  if (!configuresJsx(options)) {
+    const decision = state.jsxTransform('esbuild')
+    if (decision !== null) applyJsx(options, decision.transform)
+  }
+  if (inlinesEnv(state.options, state.platform)) {
+    const env = await state.envInlining()
+    if (env !== null) defineEnv(options, env.entries())
+  }
 }
 
 /**
@@ -382,6 +433,7 @@ async function onEnd(context: BuildContext): Promise<OnEndResult> {
   } catch (error) {
     state.logger.warn(`Cannot write the mirror manifest: ${String(toMessage(error).text)}`)
   }
+  state.reportDuplicates()
   return { warnings: shared.warnings.drain() }
 }
 
@@ -437,6 +489,9 @@ async function onResolve(
       kind: args.kind,
       isEntry: args.kind === 'entry-point',
     })
+    if (args.kind === 'entry-point' && outcome?.type === 'mirror') {
+      context.entryPaths.add(splitQuery(outcome.path).base)
+    }
     return await toResult(context, outcome, args)
   } catch (error) {
     return { errors: [toMessage(error)] }
@@ -592,6 +647,26 @@ function syntheticId(args: OnLoadArgs): string {
     if (typeof id === 'string') return id
   }
   return args.path
+}
+
+/**
+ * A `.wasm` module import in the `file` namespace (not one with an import attribute or a suffix,
+ * which esbuild's loaders handle) as the synthesised JavaScript module.
+ */
+async function onLoadWasm(
+  context: BuildContext,
+  args: OnLoadArgs,
+): Promise<OnLoadResult | undefined> {
+  if (args.namespace !== 'file' || args.suffix !== '' || Object.keys(args.with).length > 0) {
+    return undefined
+  }
+  try {
+    const loaded = await context.state.load(args.path)
+    if (loaded === null) return undefined
+    return { contents: loaded.code, loader: 'js', resolveDir: dirname(args.path) }
+  } catch (error) {
+    return { errors: [toMessage(error)] }
+  }
 }
 
 /** Synthesises a marker module (`text`, `bytes`, `css`) or one of the plugin's virtual modules. */

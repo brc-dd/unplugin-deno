@@ -518,6 +518,90 @@ describe('resolveOwned: schemes, externals and the engine (§5.2 steps 2–3)', 
   })
 })
 
+/** The engine's error for an npm package missing from a `node_modules` the user installs. */
+function notInstalled(specifier: string): DenoPluginError {
+  return new DenoPluginError('RESOLVE_NOT_FOUND', `${specifier} is not installed.`, {
+    hint: 'Run your package manager.',
+  })
+}
+
+describe('resolveOwned: checks (X3, X4, S5)', () => {
+  it('warns once about node: builtins of local and remote modules in browser bundles', async () => {
+    const { resolver, dir, mirror, engine, state } = await setup({})
+    const warnings: Array<[string, string]> = []
+    state.warnOnce = (key, message) => {
+      if (!warnings.some(([seen]) => seen === key)) warnings.push([key, message])
+    }
+    const importer = dir.path('src/main.ts')
+    expect(await resolver.resolveOwned('node:fs', importer)).toBeNull()
+    expect(await resolver.resolveOwned('node:fs', importer)).toBeNull()
+    const url = 'https://x.test/lib/mod.js'
+    engine.sources.set(url, 'export {};\n')
+    const file = await mirror.ensureMirrored(url)
+    expect(await resolver.resolveOwned('node:path', file.path)).toBeNull()
+    // npm packages are their own business.
+    const npm = dir.path('node_modules/.deno/a@1.0.0/node_modules/a/index.js')
+    expect(await resolver.resolveOwned('node:os', npm)).toBeNull()
+    expect(warnings.map(([, message]) => message)).toEqual([
+      expect.stringContaining('src/main.ts → node:fs'),
+      expect.stringContaining('https://x.test/lib/mod.js → node:path'),
+    ])
+    const quiet = await setup({}, { checks: { browserSafety: false } })
+    const quietWarnings: string[] = []
+    quiet.state.warnOnce = (_key, message) => quietWarnings.push(message)
+    await quiet.resolver.resolveOwned('node:fs', quiet.dir.path('main.ts'))
+    expect(quietWarnings).toEqual([])
+  })
+
+  it('keeps native addons external with a warning, on any platform', async () => {
+    const { resolver, dir, engine, state } = await setup(denoJson({}), {}, { platform: 'node' })
+    const warnings: string[] = []
+    state.warnOnce = (_key, message) => warnings.push(message)
+    engine.table.set('npm:native@1', npmModule(dir, 'native', '1.0.0', '', 'build/native.node'))
+    expect(await resolver.resolveOwned('npm:native@1', dir.path('main.ts'))).toEqual({
+      type: 'external',
+      id: 'npm:native@1',
+    })
+    expect(warnings).toEqual([expect.stringContaining('native.node')])
+  })
+
+  it('records the npm packages it bundles, per platform', async () => {
+    const { resolver, dir, engine, state } = await setup(denoJson({}))
+    const recorded: string[] = []
+    state.recordNpmPackage = (platform, name, version) =>
+      recorded.push(`${platform} ${name}@${version}`)
+    engine.table.set('npm:kleur@3', npmModule(dir, 'kleur', '3.0.3', '', 'index.js'))
+    engine.table.set('npm:kleur@4', npmModule(dir, 'kleur', '4.1.5', '', 'index.mjs'))
+    await resolver.resolveOwned('npm:kleur@3', dir.path('main.ts'))
+    await resolver.resolveOwned('npm:kleur@4', dir.path('main.ts'))
+    expect(recorded).toEqual(['browser kleur@3.0.3', 'browser kleur@4.1.5'])
+  })
+
+  it('explains npm: packages missing from package.json with nodeModulesDir manual', async () => {
+    const { resolver, dir, engine } = await setup({
+      'deno.json': { nodeModulesDir: 'manual' },
+      'package.json': { dependencies: { listed: '^1' } },
+    })
+    engine.table.set('npm:kleur@^4', notInstalled('npm:kleur@^4'))
+    engine.table.set('npm:listed@^1', notInstalled('npm:listed@^1'))
+    const importer = dir.path('main.ts')
+    const missing: unknown = await resolver
+      .resolveOwned('npm:kleur@^4', importer)
+      .catch((error: unknown) => error)
+    expect(missing).toMatchObject({
+      code: 'RESOLVE_NOT_FOUND',
+      importer,
+      hint: expect.stringMatching(/^kleur is not a dependency in package\.json/),
+    })
+    expect((missing as DenoPluginError).hint).toContain('move it to deno.json `imports`')
+    // A listed dependency is only missing an install: the engine's hint stays.
+    const listed: unknown = await resolver
+      .resolveOwned('npm:listed@^1', importer)
+      .catch((error: unknown) => error)
+    expect(listed).toMatchObject({ hint: 'Run your package manager.' })
+  })
+})
+
 describe('resolveOwned: npm packages in the global cache (deno-cache)', () => {
   it('resolves bare and relative imports inside global-cache packages through the engine', async () => {
     const { resolver, engine, dir, denoDir } = await setup(

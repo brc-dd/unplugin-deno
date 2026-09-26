@@ -74,6 +74,7 @@ describe('detectNodeModules: mode (Deno 2.9 raw_node_modules_dir_mode)', () => {
       dir: null,
       layout: null,
       hasJsrDeps: false,
+      foreignManager: null,
     })
   })
 })
@@ -94,6 +95,7 @@ describe('detectNodeModules: layout', () => {
       dir: dir?.path('node_modules'),
       layout: 'isolated',
       hasJsrDeps: false,
+      foreignManager: null,
     })
   })
 
@@ -144,6 +146,36 @@ describe('detectNodeModules: layout', () => {
 
   it('ignores a node_modules file', async () => {
     const info = await detect({ node_modules: 'not a directory' }, {})
-    expect(info).toMatchObject({ dir: null, layout: null })
+    expect(info).toMatchObject({ dir: null, layout: null, foreignManager: null })
+  })
+})
+
+describe('detectNodeModules: node_modules installed by another package manager', () => {
+  it.each<[string, string]>([
+    ['node_modules/.pnpm/kleur@4.1.5/node_modules/kleur/package.json', 'pnpm'],
+    ['node_modules/.modules.yaml', 'pnpm'],
+    ['node_modules/.package-lock.json', 'npm'],
+    ['node_modules/.yarn-integrity', 'yarn'],
+    ['node_modules/.yarn-state.yml', 'yarn'],
+  ])('%s -> %s', async (marker, manager) => {
+    const info = await detect(
+      { [marker]: '{}', 'node_modules/kleur/package.json': '{}' },
+      {
+        nodeModulesDir: 'auto',
+      },
+    )
+    expect(info).toMatchObject({ mode: 'auto', foreignManager: manager })
+  })
+
+  it("does not take Deno's own node_modules for a foreign one", async () => {
+    const info = await detect(
+      {
+        'node_modules/.deno/.deno.lock': '',
+        'node_modules/.deno/kleur@4.1.5/node_modules/kleur/package.json': '{}',
+        'node_modules/kleur/package.json': '{}',
+      },
+      { nodeModulesDir: 'auto' },
+    )
+    expect(info).toMatchObject({ layout: 'isolated', foreignManager: null })
   })
 })

@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { HostResolve, HostResolvedId } from './shared.js'
-import { createHostLogger, toRollupResult } from './shared.js'
+import {
+  createHostLogger,
+  esbuildJsxOptions,
+  oxcJsxOptions,
+  rollupJsxOptions,
+  toRollupResult,
+  transformContext,
+} from './shared.js'
 
 type LogMethod = (message: string) => void
 
@@ -150,5 +157,82 @@ describe('toRollupResult', () => {
     resolve.mockResolvedValueOnce({ id: 'x', external: true })
     expect(await toRollupResult(outcome, '/p/src/main.ts', resolve)).toBeNull()
     expect(await toRollupResult(outcome, '/p/src/main.ts', undefined)).toBeNull()
+  })
+})
+
+describe('JSX options per host (§5.11)', () => {
+  const automatic = { runtime: 'automatic', importSource: 'preact', development: false } as const
+  const development = { ...automatic, development: true }
+  const classic = { runtime: 'classic', factory: 'h', fragment: 'Fragment' } as const
+
+  it('maps to Oxc (Vite 8, Rolldown)', () => {
+    expect(oxcJsxOptions(automatic)).toEqual({ runtime: 'automatic', importSource: 'preact' })
+    expect(oxcJsxOptions(development)).toEqual({
+      runtime: 'automatic',
+      importSource: 'preact',
+      development: true,
+    })
+    // No `__source`/`__self` props for a classic factory, even where Vite enables development.
+    expect(oxcJsxOptions(classic)).toEqual({
+      runtime: 'classic',
+      pragma: 'h',
+      pragmaFrag: 'Fragment',
+      development: false,
+    })
+  })
+
+  it('maps to esbuild (Vite 7, esbuild)', () => {
+    expect(esbuildJsxOptions(automatic)).toEqual({ jsx: 'automatic', jsxImportSource: 'preact' })
+    expect(esbuildJsxOptions(development)).toMatchObject({ jsxDev: true })
+    expect(esbuildJsxOptions(classic)).toEqual({
+      jsx: 'transform',
+      jsxFactory: 'h',
+      jsxFragment: 'Fragment',
+    })
+  })
+
+  it('maps to Rollup, whose jsxImportSource is the runtime module', () => {
+    expect(rollupJsxOptions(automatic)).toEqual({
+      mode: 'automatic',
+      factory: 'createElement',
+      importSource: 'preact',
+      jsxImportSource: 'preact/jsx-runtime',
+    })
+    // No development runtime in Rollup.
+    expect(rollupJsxOptions(development)).toEqual(rollupJsxOptions(automatic))
+    expect(rollupJsxOptions(classic)).toEqual({
+      mode: 'classic',
+      factory: 'h',
+      fragment: 'Fragment',
+    })
+  })
+})
+
+describe('transformContext', () => {
+  it('wraps the host parser and asks the host whether a module is an entry', () => {
+    const parse = vi.fn<(code: string, options: { lang: string }) => unknown>((code, options) => ({
+      code,
+      ...options,
+    }))
+    const context = {
+      parse,
+      getModuleInfo: (id: string) => ({ isEntry: id === '/p/main.ts' }),
+    }
+    const main = transformContext(context, '/p/main.ts')
+    expect(main.isEntry?.()).toBe(true)
+    expect(transformContext(context, '/p/lib.ts').isEntry?.()).toBe(false)
+    expect(main.parse?.('x', 'tsx')).toEqual({ code: 'x', lang: 'tsx' })
+    const bare = transformContext({}, '/p/main.ts')
+    expect(bare.parse).toBeUndefined()
+    expect(bare.isEntry?.()).toBe(false)
+    const throwing = transformContext(
+      {
+        getModuleInfo: () => {
+          throw new Error('not available')
+        },
+      },
+      '/p/main.ts',
+    )
+    expect(throwing.isEntry?.()).toBe(false)
   })
 })
