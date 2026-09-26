@@ -16,7 +16,8 @@
  * Extra entries are harmless to `deno cache --frozen` and `deno run --frozen` (verified with Deno
  * 2.9.7), so the copy errs on the side of including requirements that point into the closure.
  * The resolver records the externals per platform ({@link ExternalRecorder}); hosts call
- * {@link writeSidecar} once the output is written (Rollup-family `writeBundle`, esbuild `onEnd`).
+ * {@link writeSidecar} once the output is written (Rollup-family `writeBundle`, esbuild `onEnd`,
+ * webpack and Rspack `done`).
  *
  * @module
  */

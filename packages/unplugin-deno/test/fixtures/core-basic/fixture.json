@@ -1,7 +1,7 @@
 {
   "title": "jsr:, npm:, https: (with relative imports), data:, node:, local and import-map aliases bundled together; a ?query import stays with the host",
   "entries": ["src/main.ts"],
-  "hosts": ["rolldown", "rollup"],
+  "hosts": ["rolldown", "rollup", "esbuild", "webpack", "rspack", "rsbuild"],
   "expect": {
     "values": {
       "joined": "a/b",

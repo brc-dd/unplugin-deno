@@ -3,33 +3,43 @@
 Status: **approved 2026-09-25** (revision 2, after a fact-check against the research and a feasibility review of the
 core mechanisms against the real sources). Milestones M0–M3 below are the work plan; M1 is the first target.
 
-**Progress (2026-09-26).** M0 is done. M1 is implemented: the config layer, the `loader` engine, the core plugin and
-the Vite 8/7, Rolldown, Rollup and esbuild adapters; [architecture.md](architecture.md) describes the code, and its
-[Appendix A](architecture.md#appendix-a-deviations-from-planmd) lists where it departs from sections 3–6 below. Still
-open for M1: "Windows green" (CI), the release workflow and the first publish (npm and JSR, see
-[contributing.md](contributing.md#release)), the D8 docs, and from the P0 list the `jsrDepsInNodeModules` route of
-D2, R6's `browser: false` mappings for packages from Deno's global cache, and P2's Deno Deploy and `deno desktop`
-checks. The examples and the benchmark are in [`examples/`](../examples) and [`bench/`](../bench). Next: M2 (the P1
-set), starting with the follow-ups below.
+**Progress (2026-09-26, after the M2 work).** M0 is done, and M1 is done except for the items listed below. Of M2,
+the P1 set is implemented on Vite 8/7, Rolldown, Rollup, esbuild, webpack, Rspack and Rsbuild: the `deno` CLI engine
+with `engine: 'auto'` selection, S3 (the sidecar `deno.json`/`deno.lock`), S6, L5 for the automatic and classic
+runtimes, the Wasm instantiation of L6, `import.meta.main` (L7), env inlining (L9), L10, R9 (Vite workers), R10, R11,
+R12's duplicate warning (X4), R13, R15, D4, D7, X3 for `node:` builtins and native addons (S5), X4, X5, the webpack
+and Rspack/Rsbuild adapters, and the frozen lockfile/CI mode. [architecture.md](architecture.md) describes the code;
+its [Appendix A](architecture.md#appendix-a-deviations-from-planmd) lists where it departs from sections 2–6 below.
+Open:
 
-**Follow-ups found by the examples (2026-09-26), for M2:**
+- M2: `jsx: 'deno'` (L5 `precompile` for local files; `"jsx": "precompile"` compiles with the automatic runtime and a
+  warning meanwhile), S4's `resolve.builtins` experiment, L8, the source-phase imports of L6,
+  `import.meta.filename`/`dirname` (L7), DCE constants such as `IS_BROWSER` (L9), CommonJS-only packages and the full
+  import chain in X3/S5, and the Bun adapter (`unplugin-deno/bun` and `/farm` are inert).
+- From M1: the release workflow and the first publish (npm and JSR; the JSR dry run still fails, see
+  [contributing.md](contributing.md#release)), the D8 docs, R6's `browser: false` mappings for packages from Deno's
+  global cache, and P2's Deno Deploy and `deno desktop` checks.
+- M3 as planned, S7 included.
 
-1. `compilerOptions.jsx`/`jsxImportSource` from `deno.json` are not applied to local JSX on any host yet (L5): map
-   them onto Vite `oxc.jsx`/`esbuild.jsx*`, Rolldown `transform.jsx`, esbuild `jsx`/`jsxImportSource`, Rollup `jsx`.
-2. Rollup-family hosts turn the mirror's URL `sources` into mangled paths (`…/1.0.10/https:/jsr.io/…`); esbuild keeps
-   them. Emit `sources` as the source file name relative to the mirror file instead (L2/L11), and document that npm
-   files from Deno's global cache keep their `DENO_DIR` paths.
-3. Vite's import-attribute marker ids embed absolute paths (`\0deno:text:/Users/…`) that leak into output region
-   comments (L11): use root-relative paths.
-4. `nodeModulesDir: "auto"` with a `package.json` lets the engine install the package.json dependencies into
-   `node_modules/.deno` and re-point pnpm's links: detect a foreign package manager's `node_modules` and warn (or treat
-   as `manual`), and improve the `manual`-mode hint ("add to package.json and install, or move to deno.json").
-5. Running `deno run -A npm:vite build` with `nodeModulesDir: "none"` fails to resolve `unplugin` from our dist
-   (documented: use `--node-modules-dir=manual`); consider bundling nothing else but documenting this in the README.
-6. Pinned externals are not in a lockfile generated from the sources, so `deno run --frozen --cached-only` of the
-   output fails (S3: emit a sidecar `deno.lock`/`deno.json`).
-7. `config: 'browser/deno.json'` puts the mirror under `browser/node_modules`; document `cacheDir` for that setup.
-8. Add `"prepare": "tsdown"` (or equivalent) so a fresh clone works without a manual build.
+CI (2026-09-26, commit 4a123a6): all 16 jobs pass on ubuntu, macOS and Windows (Node 22 and 26, Deno, Bun; lint,
+build and package checks; the examples). The Windows failures of the `deno` engine were one bug: `deno info` given an
+absolute Windows path read the drive letter as a URL scheme and reported the synthetic root module as external, so the
+engine now passes it as a `file:` URL. The JSR dry run still fails and runs with `continue-on-error`.
+
+**Follow-ups found by the examples (2026-09-26):**
+
+1. Done: `compilerOptions.jsx*` of `deno.json` configure local JSX on every host (L5, architecture.md §5.11).
+2. Done: mirror source maps name readable sources on the Rollup-family hosts (the file next to the mirror file; esbuild
+   keeps the URL), and the README says that npm files from Deno's global cache keep their `DENO_DIR` paths.
+3. Done: Vite marker ids are relative to the root (`\0deno:<type>:<path>.js`, `~u` for `..`).
+4. Done: a warning when `nodeModulesDir: "auto"` meets a `node_modules` another package manager installed, and a hint
+   that says to add an `npm:` package to `package.json` with `"manual"`.
+5. Documented in the README and the examples: `--node-modules-dir=manual` when a bundler runs under Deno in a project
+   with `"nodeModulesDir": "none"`.
+6. Done: `emitDenoConfig` writes the sidecar `deno.json`/`deno.lock`, so the output runs with
+   `deno run --frozen --cached-only` (S3).
+7. Documented in the README and `examples/esbuild-browser`: `cacheDir` when `config` points into a subdirectory.
+8. Done: `"prepare": "tsdown"` builds `dist/` after a fresh clone.
 
 The plan is derived from the research reports in [`research/`](research/README.md) (about 5,100 lines, six parallel
 research passes over 30+ prior-art packages, the bundlers' current APIs, Deno 2.5–2.9 release notes, framework

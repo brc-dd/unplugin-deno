@@ -1,7 +1,7 @@
 /**
  * The core fixtures (`test/fixtures/core-*`) built with a real host and asserted on the output.
- * `rolldown.test.ts` and `rollup.test.ts` run it for their host; fixtures whose `hosts` do not
- * list the host are skipped there (with the reason in `SKIPPED`).
+ * `rolldown.test.ts` and `rollup.test.ts` run it for their host; the fixtures a host cannot build
+ * are listed in `SKIPPED` with the reason (the `hosts` field of `fixture.json` is documentation).
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'

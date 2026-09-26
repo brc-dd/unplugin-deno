@@ -13,17 +13,18 @@ unplugin-deno/
 ├─ AGENTS.md                 # entry point for coding agents (CLAUDE.md imports it)
 ├─ README.md                 # user-facing README (copied to packages/unplugin-deno/README.md, see "Release")
 ├─ .changeset/               # pending changesets (see "Release")
-├─ .github/workflows/ci.yml  # lint, test matrix (3 OS × Node 22/26, Deno, Bun), build and package checks
+├─ .github/workflows/ci.yml  # lint, test matrix (3 OS × Node 22/26, Deno, Bun), build and package checks, examples
 ├─ packages/unplugin-deno/   # the published package (npm `unplugin-deno`, JSR `@brc-dd/unplugin-deno`)
 │  ├─ src/
 │  │  ├─ index.ts            # the unplugin instance + public types and errors
 │  │  ├─ vite.ts rolldown.ts rollup.ts esbuild.ts webpack.ts rspack.ts rsbuild.ts bun.ts farm.ts  # host entries
-│  │  ├─ core/               # bundler-agnostic plugin: state, options, ids, resolveId, mirror, externals, attributes
+│  │  ├─ core/               # bundler-agnostic plugin: state, options, ids, resolveId, mirror, externals, sidecar,
+│  │  │                      # attributes, source transforms, JSX, Wasm, checks, lockfile policy
 │  │  ├─ config/             # deno.json(c) discovery, workspaces, import maps, lockfile, nodeModulesDir
-│  │  ├─ engine/             # Engine interface + `loader` engine (vendored @deno/loader); `deno` (CLI) engine stub (M2)
+│  │  ├─ engine/             # Engine interface, engine selection, `loader` (vendored @deno/loader), `deno` (Deno CLI)
 │  │  ├─ hosts/<host>/       # per-host adapters (only what unplugin cannot express); shared.ts
 │  │  ├─ diagnostics/        # DenoPluginError and error codes, logger
-│  │  ├─ utils/              # path/URL helpers (Windows-safe), fs, hashing, the import lexer
+│  │  ├─ utils/              # path/URL helpers (Windows-safe), fs, hashing, the import lexer, a JS tokenizer
 │  │  ├─ vendored-deno-loader.ts  # the only importer of vendor/deno-loader; must stay directly in src/
 │  │  └─ register.ts api.ts  # `unplugin-deno/register` and `unplugin-deno/api` (placeholders that throw until M3)
 │  ├─ vendor/deno-loader/    # generated: patched @deno/loader wasm + glue, hooks.js, LICENSE, VERSION, NOTICE.md
@@ -40,9 +41,9 @@ unplugin-deno/
 └─ docs/                     # this file, architecture, plan, research
 ```
 
-Each directory of `src/` has a `README.md` with a short module map; keep it in step with the code. Unit tests are
-colocated with the code they test (`src/**/*.test.ts`); integration tests live in `test/integration/`, the helpers' own
-tests in `test/helpers/*.test.ts`.
+`src/config/`, `src/core/`, `src/engine/` and `src/hosts/` each have a `README.md` with a short module map; keep
+them in step with the code. Unit tests are colocated with the code they test (`src/**/*.test.ts`); integration tests
+live in `test/integration/`, the helpers' own tests in `test/helpers/*.test.ts`.
 
 ## Toolchain
 
@@ -51,8 +52,8 @@ tests in `test/helpers/*.test.ts`.
   automatically (`autoInstallPeers: false`): a test that needs webpack, Rspack, Rsbuild or Farm adds it as a
   devDependency.
 - Runtimes supported: **Node ≥ 22.12**, **Deno ≥ 2.7** (2.8+ recommended), **Bun ≥ 1.3**; CI tests Node 22 and 26,
-  the latest Deno 2 and the latest Bun. Building (tsdown) and running `scripts/*.ts` (native type stripping) need
-  Node ≥ 22.18.
+  the latest Deno 2 and the latest Bun. The `deno` engine needs a Deno ≥ 2.8.3 binary. Building (tsdown) and running
+  `scripts/*.ts` (native type stripping) need Node ≥ 22.18.
 - Build: **tsdown** (Rolldown-based), `pnpm build`. ESM only, flat `dist/*.js` + `dist/*.d.ts`
   (`fixedExtension: false`); entry files start with a `@ts-self-types` comment for JSR. Type declarations are
   emitted by tsdown with **TypeScript 6** (its declaration output does not support TypeScript 7 yet);
@@ -108,10 +109,13 @@ Each fixture in `packages/unplugin-deno/test/fixtures/<name>/` is a complete, mi
 - `deno.json` (or `deno.jsonc`), optional `deno.lock`, optional `package.json`, sources under `src/`.
 - A `fixture.json` describing what it exercises (`title`, `entries`, `hosts`, optional `expect`, `issues`, `source`;
   the type and validation are in `test/helpers/fixture.ts`) so integration tests can iterate fixtures generically
-  and so a reader knows the purpose without reading the code. `smoke-jsr-npm` is the reference example.
-- Names describe the scenario, not the bug, prefixed by the tests that use them: `core-*` (the core suite, run on
-  every host), `engine-*` (the engine contract), `esbuild-*` and `vite-*` (host-specific tests); unprefixed fixtures
-  (`import-map-scopes`, `workspace-globs`, `lockfile-v5-sample`, …) serve the config-layer tests.
+  and so a reader knows the purpose without reading the code. `smoke-jsr-npm` is the reference example. `hosts` lists
+  the hosts whose integration tests build the fixture (`[]` for fixtures of other tests); it is documentation, checked
+  only against the host names, so update it when a host's tests start or stop using the fixture.
+- Names describe the scenario, not the bug, prefixed by the tests that use them: `core-*` (the core suite and every
+  host's integration tests), `engine-*` (the engine contract; `engine-cli-*` only the `deno` engine), `esbuild-*`,
+  `vite-*` and `webpack-*` (host-specific tests; `webpack-remote-css` and `webpack-watch` run on Rspack too);
+  unprefixed fixtures (`import-map-scopes`, `workspace-globs`, `lockfile-v5-sample`, …) serve the config-layer tests.
 - Remote fixtures pin exact versions and ship a `deno.lock` so tests are deterministic and work offline after the
   first run (CI caches the test `DENO_DIR`). Generate the lock with `deno install` in a copy of the fixture **outside
   the repository** (Deno would otherwise pick up the ancestor `package.json` and `deno.json`), with a scratch
@@ -134,12 +138,15 @@ not paste foreign layouts wholesale.
 Unit tests sit next to each module (`src/**/*.test.ts`) and use small inline projects (`tempDir(files)`) or
 fixtures. Integration tests build fixtures with the real bundlers: `test/integration/core-suite.ts` holds the tests
 of the `core-*` fixtures and runs once per host from `rolldown.test.ts` and `rollup.test.ts` (a fixture a host cannot
-build is skipped there with its reason in `SKIPPED`); `esbuild.test.ts`, `vite.test.ts` (builds) and
-`vite-dev.test.ts` (dev server) run the same fixtures on their host plus their own `esbuild-*`/`vite-*` fixtures, and
-the Vite files run everything on Vite 8 and Vite 7. `src/engine/contract.test.ts` runs the `engine-*` fixtures
-against every engine, and `src/config/import-map.wpt.test.ts` runs the data in `test/data/`. The whole suite runs
-under Node (`pnpm test`), Deno (`pnpm test:deno`) and Bun (`pnpm test:bun`), and CI runs each on Linux, macOS and
-Windows.
+build is skipped there with its reason in `SKIPPED`); `esbuild.test.ts`, `vite.test.ts` (builds), `vite-dev.test.ts`
+(dev server), `webpack.test.ts`, `rspack.test.ts` and `rsbuild.test.ts` run the same fixtures on their host plus their
+own `esbuild-*`/`vite-*`/`webpack-*` fixtures, and the Vite files run everything on Vite 8 and Vite 7. The webpack and
+Rspack tests cover production builds and watch mode (`watchBuilds`), webpack's also its persistent cache, and the
+Rsbuild tests production builds of one or more environments; no test starts their dev servers.
+`src/engine/contract.test.ts` runs the `engine-*` fixtures against both engines (the
+`deno` engine's run needs a Deno binary, below), `src/engine/deno-cli/engine.test.ts` the `engine-cli-*` fixtures, and
+`src/config/import-map.wpt.test.ts` the data in `test/data/`. The whole suite runs under Node (`pnpm test`), Deno
+(`pnpm test:deno`) and Bun (`pnpm test:bun`), and CI runs each on Linux, macOS and Windows.
 
 ## Testing expectations
 
@@ -158,11 +165,27 @@ Windows.
   return the chunks with their code, module ids and sizes, imports, and the host's logs):
   `buildWithRolldown(fixtureDir, entries, pluginOptions, rolldownOptions)` and `buildWithRollup(…)` in
   `test/helpers/build.ts` (for Rollup, followed by the small esbuild TypeScript and JSON plugins of
-  `test/helpers/rollup-ts.ts`); `buildWithEsbuild` and `contextWithEsbuild` in `test/helpers/esbuild.ts`;
-  `buildWithVite`, `startViteDevServer` and `loadVite(7 | 8)` in `test/helpers/vite.ts`. `evaluateModule` imports an
-  output file in the current runtime (`installCssStyleSheet` provides a `CSSStyleSheet` stand-in).
-- Tests that need the `deno` binary (running the output under `deno run --cached-only`) skip when it is missing (CI
-  has it only on the `deno` rows).
+  `test/helpers/rollup-ts.ts`; the TypeScript plugin preserves JSX for Rollup's `jsx` option);
+  `buildWithEsbuild` and `contextWithEsbuild` in `test/helpers/esbuild.ts`; `buildWithVite`, `startViteDevServer` and
+  `loadVite(7 | 8)` in `test/helpers/vite.ts`; `buildWithWebpack`/`webpackConfig` in `test/helpers/webpack.ts`
+  (TypeScript through `esbuild-loader` with `target: 'esnext'`, which keeps import attributes),
+  `buildWithRspack`/`rspackConfig` in `test/helpers/rspack.ts` (`builtin:swc-loader` with
+  `jsc.experimental.keepImportAttributes`), and `buildWithRsbuild` in `test/helpers/rsbuild.ts` (one `BuildResult` per
+  Rsbuild environment, default SWC settings). Those three share `test/helpers/webpack-stats.ts` (stats → chunks,
+  `HostBuildError` with the host's error messages, the captured infrastructure log) and
+  `test/helpers/webpack-family.ts` (`entryChunk`, `expectedValues`, `generationDir`, `mirrorLoads`, `infoLines`,
+  `runUnderDeno`, `watchBuilds` for watch-mode rebuilds). `evaluateModule` imports an output file in the current
+  runtime (`installCssStyleSheet` provides a `CSSStyleSheet` stand-in).
+- `startMockRegistry()` (`test/helpers/mock-registry.ts`) serves the npm package `mock-pkg@1.0.0` and the JSR package
+  `@mock/pkg@1.0.0` on `127.0.0.1` (an ephemeral port) and records every request with its `authorization` header; the
+  private-registry tests point `NPM_CONFIG_REGISTRY` and an `.npmrc` token, the `fetch` option, or `JSR_URL` with
+  `DENO_AUTH_TOKENS` at it, with a fresh `DENO_DIR` (and `HOME` set to the project, so no user `.npmrc` applies).
+- Deno binaries: tests that run the output under `deno run --cached-only` (or, with the sidecar,
+  `deno run --frozen --cached-only`) need a `deno` on `PATH` and skip without one (`DENO_AVAILABLE` in
+  `core-suite.ts`); CI has it only on the `deno` rows. Tests of the `deno` engine use `denoBinary` from
+  `test/helpers/deno-binary.ts`: the binary named by `UNPLUGIN_DENO_TEST_DENO_BINARY` (default `deno`), probed once
+  when the module loads with `--version`, with a `skipReason` when it is missing or older than 2.8.3; they skip with
+  `it.skipIf(denoBinary.skipReason !== undefined)` and pass `denoBinary: denoBinary.binary` to the plugin.
 - Keep tests hermetic: fixtures pin versions; network access only for the pinned remote fixtures. The engine reads
   `DENO_DIR` from the environment, so tests set it with `vi.stubEnv('DENO_DIR', await denoDir())`: `denoDir()` is
   `$UNPLUGIN_DENO_TEST_DENO_DIR` (CI points it at a cached directory) or `<os temp>/unplugin-deno-test/deno-dir`,
@@ -171,21 +194,25 @@ Windows.
 
 ## Documentation
 
-- `README.md`: short and user-facing (install, one config example per host, options table, platforms,
-  limitations, comparison, credits). No architecture or internals. Every claim needs a test; say "planned" for
-  options and hosts that have no effect yet.
+- `README.md`: short and user-facing (install, a quick start covering every host, options table, engines,
+  platforms, limitations, comparison, credits; about 250 lines). No architecture or internals. Every claim needs a
+  test; say "planned" for options and hosts that have no effect yet.
 - `docs/architecture.md`: how it works and why (for contributors and agents). Update it in the same PR as a
   behavioural change.
 - `docs/plan.md`: goals, scope and milestones; only its progress note changes as work lands.
-- `src/*/README.md`: one short module map per directory.
+- `src/{config,core,engine,hosts}/README.md`: one short module map per directory.
+- `.changeset/*.md`: what users see changing; until the first release, one changeset describes 0.1.0 as a whole.
 - `docs/research/`: historical; do not edit, add new findings as new files.
 
 ## Release
 
-Not set up yet: `pnpm release` fails on purpose until the release workflow lands (M1). What exists:
+Not set up yet: `pnpm release` fails on purpose until the release workflow lands, and nothing has been published (npm
+has only a `0.0.0` placeholder of `unplugin-deno`, JSR has no `@brc-dd/unplugin-deno`; checked 2026-09-26). What
+exists:
 
 - Versioning: **changesets** (`pnpm changeset`; `.changeset/config.json`, public access, oxfmt formatting).
-  The pending changesets describe the release for users; `pnpm changeset status` lists the bumps.
+  The pending changeset (`.changeset/first-release.md`, one `minor` bump) describes 0.1.0 for users;
+  `pnpm changeset status` lists the bumps.
 - npm: `packages/unplugin-deno` publishes `dist/` and `vendor/` (plus `package.json`, `README.md`, `LICENSE`).
   Its `README.md` and `LICENSE` are copies of the root files (npm and JSR publish from the package directory); keep
   them identical (`cp README.md packages/unplugin-deno/README.md`; links in the README are absolute URLs so they work
@@ -204,18 +231,19 @@ Not set up yet: `pnpm release` fails on purpose until the release workflow lands
 
 Known issues to resolve before the first JSR publish:
 
-- `pnpm jsr:dry-run` fails type checking (checked 2026-09-26 with Deno 2.9.7):
-  - `TS2307: Cannot find module '…/dist/options-<hash>.js'`. Declarations shared by several entries go into a
-    declaration-only chunk (`options-<hash>.d.ts`) that the entry `.d.ts` files import as `./options-<hash>.js`;
-    TypeScript resolves that to the `.d.ts`, Deno's checker does not. Verified: with a stub `options-<hash>.js`
-    containing `/* @ts-self-types="./options-<hash>.d.ts" */` that error goes away, and without the entries'
-    `@ts-self-types` banners the check passes but warns `unsupported-javascript-entrypoint` for all 12 entries (JSR
-    users would get no types). Candidate fixes: emit such stubs from a tsdown hook, emit self-contained declarations
-    per entry, or publish the TypeScript sources to JSR.
-  - `TS2305` for `EntrypointDiagnostic`, `LoadResponse`, `ModuleLoadResponse` and `WorkspaceOptions`:
-    `dist/vendored-deno-loader.d.ts` imports these type-only exports from `vendor/deno-loader/mod.js`, and Deno takes
-    the types of `mod.js` from the JavaScript because, unlike `hooks.js`, it has no `@ts-self-types` comment pointing
-    at `mod.d.ts` (a candidate patch for `scripts/vendor-loader.ts`).
+- `pnpm jsr:dry-run` (after `pnpm build`) fails type checking with three errors (checked 2026-09-26 with Deno 2.9.7):
+  - `TS2307: Cannot find module '…/dist/options-<hash>.js'`, at `dist/index.d.ts`. Declarations shared by several
+    entries go into a declaration-only chunk (`options-<hash>.d.ts`, with no `.js` beside it) that the entry `.d.ts`
+    files import as `./options-<hash>.js`; TypeScript resolves that to the `.d.ts`, Deno's checker does not. Verified
+    earlier: with a stub `options-<hash>.js` containing `/* @ts-self-types="./options-<hash>.d.ts" */` that error goes
+    away, and without the entries' `@ts-self-types` banners the check passes but warns
+    `unsupported-javascript-entrypoint` for all 12 entries (JSR users would get no types). Candidate fixes: emit such
+    stubs from a tsdown hook, emit self-contained declarations per entry, or publish the TypeScript sources to JSR.
+  - `TS2420: Class 'Workspace' incorrectly implements interface 'Disposable'` and the same for `Loader`, at
+    `vendor/deno-loader/mod.d.ts` (lines 139 and 152): since the vendored `mod.js` carries
+    `// @ts-self-types="./mod.d.ts"`, Deno checks that declaration file, whose classes say `implements Disposable` but
+    declare no `[Symbol.dispose]()` member. A candidate fix is a patch in `scripts/vendor-loader.ts` that adds the
+    member to the declarations (or drops the `implements` clause).
 
   CI runs the dry run with `continue-on-error`.
 - Under Deno, a JSR package is loaded from `https://jsr.io/…`, but the vendored glue locates its wasm with

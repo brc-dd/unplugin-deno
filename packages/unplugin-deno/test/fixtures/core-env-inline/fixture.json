@@ -1,7 +1,7 @@
 {
   "title": "Env inlining for the browser: Deno.env.get(\"PUBLIC_X\"), process.env.PUBLIC_X and process.env[\"PUBLIC_X\"] become JSON literals from the process and .env files; other reads, Deno.env.toObject() and the server platform stay as they are",
   "entries": ["src/main.ts"],
-  "hosts": ["rolldown", "rollup", "esbuild", "vite"],
+  "hosts": ["vite", "rolldown", "rollup", "esbuild", "webpack", "rspack", "rsbuild"],
   "expect": {
     "values": {
       "greeting": "hello from .env",

@@ -34,7 +34,7 @@ export interface EnvOptions {
   server?: boolean
 }
 
-/** Toggles for the diagnostics checks; `lockfile` is planned. */
+/** Toggles for the diagnostics checks. */
 export interface ChecksOptions {
   /**
    * Browser safety: warn when a local or remote module of a browser bundle imports a `node:`
@@ -225,7 +225,8 @@ export interface Options {
   // Transforms
 
   /**
-   * Support `with { type: "text" | "bytes" }` import attributes on every host.
+   * Support `with { type: "text" | "bytes" | "css" }` import attributes on every host (`json` is
+   * left to the host).
    * @default true
    */
   importAttributes?: boolean

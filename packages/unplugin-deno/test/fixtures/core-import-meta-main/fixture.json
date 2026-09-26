@@ -1,7 +1,7 @@
 {
   "title": "import.meta.main is false in modules that are not entries (a local module and a remote one), while the entry keeps it",
   "entries": ["src/main.ts"],
-  "hosts": ["rolldown", "rollup", "esbuild", "vite"],
+  "hosts": ["vite", "rolldown", "rollup", "esbuild", "webpack", "rspack", "rsbuild"],
   "issues": ["denoland/deno-rolldown-plugin#15"],
   "expect": { "values": { "libMain": false, "remoteMain": false } }
 }

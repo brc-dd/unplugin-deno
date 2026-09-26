@@ -1,7 +1,7 @@
 {
   "title": "The import map is authoritative over node_modules: a mapped bare name resolves through it even though node_modules holds a package of that name; unmapped names stay with the host",
   "entries": ["src/main.ts"],
-  "hosts": ["rolldown", "rollup"],
+  "hosts": ["vite", "rolldown", "rollup", "esbuild", "webpack", "rspack"],
   "issues": ["denoland/deno#33787"],
   "expect": { "values": { "stub": false, "stubOnly": "stub-only" } }
 }

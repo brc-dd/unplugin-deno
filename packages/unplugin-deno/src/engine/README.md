@@ -36,6 +36,8 @@ Deno's resolution and loading behind one interface
     progress lines, and `DENO_DIR` cache files (the `// denoCacheMetadata=` line removed).
   - `process.ts`: spawning with timeouts and cancellation, the version gate (`probeDeno`, once per
     binary and process) and Deno's cache directories.
+  - The synthetic root module is passed to `deno info` as a `file:` URL: on Windows an absolute
+    path (`C:\…`) is read as a URL with the scheme `c:` and reported as an external module.
 - `media-type.ts`, `deno-dir.ts`, `npm-package.ts`, `package-specifier.ts`: media types, the
   `DENO_DIR` location, npm package lookup for resolved files, and `jsr:`/`npm:`/bare specifier
   parsing.

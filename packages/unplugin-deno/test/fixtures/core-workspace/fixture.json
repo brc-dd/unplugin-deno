@@ -1,7 +1,7 @@
 {
   "title": "Workspace with glob members: a member imports another by its JSR name (with a subpath export) and uses its own member-scoped import-map alias",
   "entries": ["packages/app/src/main.ts"],
-  "hosts": ["rolldown", "rollup"],
+  "hosts": ["rolldown", "rollup", "esbuild", "webpack", "rspack", "rsbuild"],
   "expect": {
     "values": {
       "lib": "lib 1.0.0",

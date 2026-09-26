@@ -1,7 +1,7 @@
 {
   "title": "Import attributes: text, bytes and css become ?deno-type= marker modules, json stays with the host; local and remote targets, static and dynamic imports",
   "entries": ["src/main.ts"],
-  "hosts": ["rolldown", "rollup"],
+  "hosts": ["vite", "rolldown", "rollup", "esbuild", "webpack", "rspack", "rsbuild"],
   "issues": ["rolldown/rolldown#2758"],
   "expect": {
     "values": {

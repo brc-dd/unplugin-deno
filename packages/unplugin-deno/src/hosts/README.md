@@ -104,10 +104,10 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
     browser), `compiler.context`, `compiler.options.entry`, the user's `resolve.conditionNames`.
     `watchRun` reloads the project for changed config files; they are `fileDependencies` (a
     lockfile not created yet a missing dependency, which some watchers would otherwise report as
-    removed) and `buildDependencies` (persistent cache) of every compilation; `done` flushes the
-    manifest and,
-    outside watch mode, disposes the engines (`TODO(sidecar)` marks where the Deno-platform
-    sidecar will be written); `shutdown` and `watchClose` dispose them.
+    removed) and `buildDependencies` (persistent cache) of every compilation; `done` writes the
+    sidecar `deno.json`/`deno.lock` of a Deno platform build into `output.path`
+    (`emitDenoConfig`), flushes the manifest and, outside watch mode, disposes the engines;
+    `shutdown` and `watchClose` dispose them.
   - `transforms.ts`: `SourceTransforms`, the rules added once the project is loaded: a `pre`
     rule runs `state.transform` (unplugin's public `transform` loader) on local script modules
     (`.[cm][jt]sx?` outside `node_modules`, the mirror and Deno's npm cache; not `?raw` or
@@ -154,9 +154,10 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
     `readResource`, so neither is used; its native compiler reads `module.rules` at the first
     build, after `beforeRun`); `externalsPresets.web` (http(s):, `//`, `std:`) is taken over as on
     webpack. Entries come from `afterResolve` (no issuer; Rspack does not say which dependencies
-    are workers), duplicates are reported per compiler platform in `finishModules`. Standalone
-    compilers set the host hints and dispose the engines when done; Rsbuild environments share a
-    state that Rsbuild's hooks set up and close. Rspack's incremental rebuild resolves again only
+    are workers), duplicates are reported per compiler platform in `finishModules`, and `done`
+    writes the Deno platform sidecar into `output.path` as on webpack. Standalone compilers set
+    the host hints and dispose the engines when done; Rsbuild environments share a state that
+    Rsbuild's hooks set up and close. Rspack's incremental rebuild resolves again only
     the imports of the modules it rebuilds, so after a config reload `watchRun` adds the
     importers of the plugin's requests (`Router.importers`) to `modifiedFiles`.
   - `synthetic.ts`: markers as empty `experiments.VirtualModulesPlugin` files under
@@ -174,15 +175,15 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
   configured them; `onAfterBuild`/`onAfterDevCompile` flush the manifest,
   `onCloseBuild`/`onCloseDevServer` dispose the engines.
 
-What users configure on these hosts: a TypeScript loader that keeps import attributes (webpack:
-`esbuild-loader` with `target: 'esnext'` or ≥ `es2025`, or webpack's own `experiments.typescript`
-where Node.js ≥ 22.6 provides it; Rspack: `builtin:swc-loader` with
-`jsc.experimental.keepImportAttributes: true`; Rsbuild's default SWC settings keep them), a
-loader that compiles JSX for `.jsx`/`.tsx` files (esbuild-loader and the SWC loaders get the
-`deno.json` settings; others are configured by hand), and ES module output for the Deno platform
-(`output.module: true`; webpack 5.108–5.110 also need `experiments.outputModule`, and
-`target: 'deno'` sets both). Import attributes need Rspack ≥ 2.2.3 (`resolveData.attributes`).
-`wasm: false` leaves every `.wasm` file to the host's `experiments.asyncWebAssembly` (or the
-user's rules).
+What users configure on these hosts (as the integration tests do, with webpack 5.111, Rspack 2.2
+and Rsbuild 2.2): a TypeScript loader that keeps import attributes (webpack: `esbuild-loader` with
+`target: 'esnext'`; Rspack: `builtin:swc-loader` with `jsc.experimental.keepImportAttributes:
+true`; Rsbuild's default SWC settings keep them), a loader that compiles JSX for `.jsx`/`.tsx`
+files (esbuild-loader and the SWC loaders get the `deno.json` settings; others are configured by
+hand), and ES module output for the Deno platform (`output.module: true`; with script output the
+externals become `require()` calls). The attribute types come from the hosts' `beforeResolve`
+data (`resolveData.attributes`). `wasm: false` leaves every `.wasm` file to the host's
+`experiments.asyncWebAssembly` (or the user's rules). The dev servers (webpack-dev-server, Rspack
+and Rsbuild dev) have no tests yet.
 
-Bun and Farm are not implemented yet (M2): `core/plugin.ts` gives them an inert plugin.
+Bun and Farm are not implemented yet (planned): `core/plugin.ts` gives them an inert plugin.
