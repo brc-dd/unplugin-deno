@@ -1,0 +1,7 @@
+{
+  "nodeModulesDir": "auto",
+  "jsrDepsInNodeModules": true,
+  "imports": {
+    "@std/path": "jsr:@std/path@^1"
+  }
+}

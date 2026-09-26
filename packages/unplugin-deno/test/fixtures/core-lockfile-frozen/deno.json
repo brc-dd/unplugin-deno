@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "kleur": "npm:kleur@^4.1.5"
+  }
+}

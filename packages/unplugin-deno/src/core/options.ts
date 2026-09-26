@@ -44,9 +44,18 @@ export interface ChecksOptions {
   browserSafety?: boolean
   /** Warn at the end of a build when one npm package was bundled in several versions. */
   duplicates?: boolean
-  /** Explain lockfile drift, minimum-dependency-age and `cachedOnly` misses (planned). */
+  /**
+   * Explain resolutions that `deno.lock` does not cover: packages missing from the lockfile
+   * (`NOT_IN_LOCKFILE` instead of `CACHED_ONLY_MISS` when `cachedOnly` cannot resolve them), drift
+   * that `lockfile: 'auto'` allows, and versions the minimum dependency age held back (debug
+   * output, and a hint on `RESOLVE_CONSTRAINT` errors). `lockfile: 'frozen'` fails on drift
+   * either way.
+   */
   lockfile?: boolean
 }
+
+/** How `deno.lock` is used (see {@link Options.lockfile}). */
+export type LockfileMode = 'auto' | 'frozen' | 'off'
 
 /** Context passed to the {@link Options.resolve} hook. */
 export interface ResolveHookContext {
@@ -93,8 +102,8 @@ export interface Options {
    * Resolution engine: the vendored `@deno/loader` (`'loader'`), the installed Deno CLI
    * (`'deno'`: `deno info --json` for the module graph and `deno transpile` for remote TypeScript;
    * needs Deno 2.8.3+), or `'auto'` (the loader, unless the project uses a feature the vendored
-   * loader lacks — `catalog:` versions, globs in `links`, `jsrDepsInNodeModules` — and a usable
-   * Deno is found).
+   * loader lacks — `catalog:` versions, globs in `links`, `jsrDepsInNodeModules`, a `JSR_URL`
+   * naming another registry — and a usable Deno is found).
    * @default 'auto'
    */
   engine?: 'auto' | 'loader' | 'deno'
@@ -125,25 +134,53 @@ export interface Options {
    */
   npm?: 'auto' | 'node_modules' | 'deno-cache'
   /**
-   * How `deno.lock` is used: `'auto'` reads it, `'frozen'` fails when resolutions drift from it
-   * (planned for M2), `'off'` ignores it.
+   * How `deno.lock` is used (the plugin never writes it):
+   *
+   * - `'auto'`: versions pinned in the lockfile are used; imports it does not cover resolve to
+   *   the versions `deno install` would pick (debug output says so). Acts as `'frozen'` when the
+   *   `CI` environment variable is set (not `''`, `'0'` or `'false'`) or `deno.json` sets
+   *   `"lock": { "frozen": true }`, and a lockfile exists.
+   * - `'frozen'`: like `deno install --frozen`: an `npm:`/`jsr:` import or remote URL that
+   *   resolves to a version the lockfile does not record (or records differently) fails with
+   *   `LOCKFILE_FROZEN_DRIFT`, listing the drift; run `deno install` to update the lockfile.
+   * - `'off'`: `deno.lock` is ignored (the engines get `noLock`, like `deno run --no-lock`).
    * @default 'auto'
    */
-  lockfile?: 'auto' | 'frozen' | 'off'
+  lockfile?: LockfileMode
   /**
-   * Never download; fail with a hint to run `deno install` when a module is not cached.
+   * Never download (like `deno run --cached-only`): remote modules, JSR packages and npm packages
+   * must be in Deno's cache (`DENO_DIR`) already. A missing one fails with `CACHED_ONLY_MISS`,
+   * whose hint names the import and the command that fills the cache (`deno cache <entry>` or
+   * `deno install`); an `npm:`/`jsr:` import `deno.lock` does not record fails with
+   * `NOT_IN_LOCKFILE` instead. Both engines behave the same: the `deno` engine points Deno's
+   * HTTP proxy at a closed port for this.
    * @default false
    */
   cachedOnly?: boolean
   /**
-   * Hosts remote `https:`/`http:` imports may load from. Replaces the default list; spread
-   * `DEFAULT_ALLOW_IMPORT` to extend it.
-   * @default Deno's `--allow-import` defaults (`deno.land`, `jsr.io`, `esm.sh`, `cdn.jsdelivr.net`,
-   *   `raw.githubusercontent.com`, `gist.githubusercontent.com`)
-   *
-   * Planned: not enforced yet.
+   * Hosts that remote `https:`/`http:` modules may be imported from, like Deno's
+   * `--allow-import`: `host` (any port), `host:port`, `*.domain` (the domain and its
+   * subdomains), IP addresses (`[::1]:8000` for IPv6), or `'*'` for every host. A list replaces
+   * the defaults; spread {@link DEFAULT_ALLOW_IMPORT} to extend them. Hosts of the remote
+   * modules `deno.lock` records, of the URLs the import maps name and of the JSR registry are
+   * always allowed. Checked before anything is downloaded, for the imports of remote modules and
+   * their redirects too; a disallowed host fails with `DISALLOWED_HOST`.
+   * @default {@link DEFAULT_ALLOW_IMPORT}, Deno 2.9's defaults (`deno.land:443`, `jsr.io:443`,
+   *   `esm.sh:443`, `raw.esm.sh:443`, `cdn.jsdelivr.net:443`, `raw.githubusercontent.com:443`,
+   *   `gist.githubusercontent.com:443`: HTTPS only)
    */
   allowImport?: string[]
+  /**
+   * The `fetch` the `loader` engine downloads with (remote modules, JSR and npm metadata and
+   * tarballs), e.g. to go through a proxy, add authentication, or serve JSR from a private
+   * registry. The default is `globalThis.fetch` at call time (Node.js ≥ 24 honours `HTTP_PROXY`,
+   * `HTTPS_PROXY` and `NO_PROXY` with `NODE_USE_ENV_PROXY=1`; Deno and Bun always do). Without it
+   * the loader also reads `NPM_CONFIG_REGISTRY`, `.npmrc` (registries, scoped registries, auth)
+   * and `DENO_AUTH_TOKENS`, but not `JSR_URL` (see the README). The `deno` engine ignores it: the
+   * Deno CLI downloads by itself (`HTTPS_PROXY`, `DENO_CERT`, `JSR_URL`, …).
+   * @default globalThis.fetch
+   */
+  fetch?: typeof fetch
   /**
    * Specifiers or import-map keys left to the host's resolver.
    * @default []
@@ -174,8 +211,13 @@ export interface Options {
    */
   pinExternals?: boolean
   /**
-   * Write a `deno.json` (and trimmed `deno.lock`) next to the output that pins the externals
-   * (planned for M2). A string sets the file name.
+   * After a build for the Deno platform, write a `deno.json` (`{ "lock": "./deno.lock",
+   * "nodeModulesDir": "none" }`) and a `deno.lock` that records the external `npm:`/`jsr:`
+   * packages and their dependencies (copied from the project's lockfile, or read from Deno's
+   * cache when the project has none), so `deno cache <entry>` and then
+   * `deno run --frozen --cached-only <entry>` work in the output directory (Deno Deploy). `true`
+   * writes them next to the first entry chunk; a string names the directory (relative to `cwd`).
+   * Builds for other platforms write nothing.
    * @default false
    */
   emitDenoConfig?: boolean | string
@@ -262,15 +304,18 @@ export interface ResolvedOptions {
   platform: 'auto' | Platform | Readonly<Record<string, Platform>>
   conditions: string[]
   npm: 'auto' | 'node_modules' | 'deno-cache'
-  lockfile: 'auto' | 'frozen' | 'off'
+  lockfile: LockfileMode
   cachedOnly: boolean
   allowImport: string[]
+  /** `undefined`: `globalThis.fetch` at call time. */
+  fetch: typeof fetch | undefined
   exclude: Pattern[]
   importers: { include: Pattern[]; exclude: Pattern[] }
   external: Pattern[]
   bundle: Pattern[]
   /** `null`: decided per platform by {@link pinExternalsFor}. */
   pinExternals: boolean | null
+  /** `true`: next to the entry chunk; a string: that directory (absolute). */
   emitDenoConfig: boolean | string
   importAttributes: boolean
   wasm: boolean
@@ -293,15 +338,26 @@ export interface OptionsContext {
   env: Readonly<Record<string, string | undefined>>
 }
 
-/** Deno's default `--allow-import` hosts. */
+/**
+ * Deno's default `--allow-import` hosts (Deno 2.9.7, `deno run --help`): HTTPS on the default
+ * port only, so `http://deno.land/…` is not allowed by default (as in Deno).
+ */
 export const DEFAULT_ALLOW_IMPORT: readonly string[] = Object.freeze([
-  'deno.land',
-  'jsr.io',
-  'esm.sh',
-  'cdn.jsdelivr.net',
-  'raw.githubusercontent.com',
-  'gist.githubusercontent.com',
+  'deno.land:443',
+  'jsr.io:443',
+  'esm.sh:443',
+  'raw.esm.sh:443',
+  'cdn.jsdelivr.net:443',
+  'raw.githubusercontent.com:443',
+  'gist.githubusercontent.com:443',
 ])
+
+/**
+ * An `allowImport` entry: `*`, a host name (optionally `*.`-prefixed), an IPv4 address or a
+ * bracketed IPv6 address, with an optional port.
+ */
+const ALLOW_IMPORT_ENTRY =
+  /^(?:\*|(?:\*\.)?[\w-]+(?:\.[\w-]+)*(?::\d{1,5})?|\[[\da-fA-F:.]+\](?::\d{1,5})?)$/
 
 const PLATFORMS: readonly Platform[] = ['browser', 'node', 'deno', 'neutral']
 
@@ -353,13 +409,14 @@ export function resolveOptions(
     npm: oneOf(options, 'npm', ['auto', 'node_modules', 'deno-cache'], 'auto'),
     lockfile: oneOf(options, 'lockfile', ['auto', 'frozen', 'off'], 'auto'),
     cachedOnly: optionalBoolean(options, 'cachedOnly') ?? false,
-    allowImport: stringArray(options, 'allowImport') ?? [...DEFAULT_ALLOW_IMPORT],
+    allowImport: resolveAllowImport(options.allowImport),
+    fetch: resolveFetch(options.fetch),
     exclude: patterns('exclude', options.exclude),
     importers: resolveImporters(options.importers),
     external: patterns('external', options.external),
     bundle: patterns('bundle', options.bundle),
     pinExternals: optionalBoolean(options, 'pinExternals') ?? null,
-    emitDenoConfig: resolveEmitDenoConfig(options.emitDenoConfig),
+    emitDenoConfig: resolveEmitDenoConfig(options.emitDenoConfig, cwd),
     importAttributes: optionalBoolean(options, 'importAttributes') ?? true,
     wasm: optionalBoolean(options, 'wasm') ?? true,
     importMetaMain: optionalBoolean(options, 'importMetaMain') ?? true,
@@ -413,10 +470,32 @@ function resolveImporters(value: unknown): ResolvedOptions['importers'] {
   }
 }
 
-function resolveEmitDenoConfig(value: unknown): boolean | string {
+function resolveEmitDenoConfig(value: unknown, cwd: string): boolean | string {
   if (value === undefined) return false
-  if (typeof value === 'boolean' || (typeof value === 'string' && value !== '')) return value
-  throw invalid('emitDenoConfig', 'a boolean or a file name', value)
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string' && value !== '') return resolve(cwd, value)
+  throw invalid('emitDenoConfig', 'a boolean or a directory', value)
+}
+
+function resolveAllowImport(value: unknown): string[] {
+  if (value === undefined) return [...DEFAULT_ALLOW_IMPORT]
+  if (!Array.isArray(value)) throw invalid('allowImport', 'an array of host names', value)
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !ALLOW_IMPORT_ENTRY.test(entry)) {
+      throw invalid(
+        'allowImport',
+        "host names such as 'example.com', 'example.com:8443', '*.example.com' or '*'",
+        entry,
+      )
+    }
+  }
+  return [...(value as string[])]
+}
+
+function resolveFetch(value: unknown): typeof fetch | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'function') return value as typeof fetch
+  throw invalid('fetch', 'a function', value)
 }
 
 function resolveEnv(value: unknown): ResolvedOptions['env'] {

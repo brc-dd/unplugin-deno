@@ -59,6 +59,8 @@ function args(path: string, importer: string, extra: Partial<OnResolveArgs> = {}
 describe('esbuildOptimizerPlugin (Vite 7)', () => {
   it('maps core outcomes to esbuild results for package files only', async () => {
     vi.stubEnv('DENO_DIR', await denoDir())
+    // The URL below is not in the fixture's deno.lock, which CI would freeze.
+    vi.stubEnv('CI', '')
     const project = await tempProject('vite-ssr-deno')
     onTestFinished(() => project.dispose())
     const state = new PluginState({ cwd: project.root, platform: 'browser' }, 'vite')

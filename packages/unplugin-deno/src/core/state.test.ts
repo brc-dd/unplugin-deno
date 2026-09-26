@@ -1,11 +1,13 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
-import { denoDir } from '../../test/helpers/deno-dir.js'
+import { denoDir, freshDenoDir } from '../../test/helpers/deno-dir.js'
 import { tempDir } from '../../test/helpers/temp-dir.js'
 import type { TempFiles } from '../../test/helpers/temp-dir.js'
 import { toFileUrl } from '../utils/path.js'
 import type { Options } from './options.js'
+import { writeSidecar } from './sidecar.js'
 import { PluginState, toHostSourceMap } from './state.js'
 import { PLUGIN_VERSION } from './version.js'
 
@@ -220,7 +222,8 @@ describe('PluginState hooks', () => {
     await plugin.prepare()
     const lib = await plugin.transform(code, path('src/lib.ts'), { isEntry: () => false })
     expect(lib?.code).toBe('export const main = false\n')
-    expect(lib?.map?.sources).toEqual([path('src/lib.ts')])
+    // Source maps use `/` separators, also on Windows.
+    expect(lib?.map?.sources).toEqual([path('src/lib.ts').replaceAll('\\', '/')])
     expect(await plugin.transform(code, path('src/main.ts'), { isEntry: () => true })).toBeNull()
     const mirrored = join(plugin.mirror.root, 'https', 'x.test', 'cli.ts.js')
     expect((await plugin.transform(code, mirrored))?.code).toBe('export const main = false\n')
@@ -419,5 +422,170 @@ describe('toHostSourceMap', () => {
       names: ['n'],
       mappings: 'A',
     })
+  })
+})
+
+describe('PluginState: lockfile, offline, registries and sidecar (M2 wave 2B)', () => {
+  const lock = {
+    version: '5',
+    specifiers: { 'npm:kleur@4': '4.1.5' },
+    npm: { 'kleur@4.1.5': { integrity: 'sha512-x' } },
+    workspace: { dependencies: ['npm:kleur@4'] },
+  }
+
+  it('derives the lockfile mode: off ignores deno.lock, CI freezes it', async () => {
+    const files = { 'deno.json': { imports: { kleur: 'npm:kleur@^4' } }, 'deno.lock': lock }
+    const off = await state(files, { lockfile: 'off' })
+    await off.state.prepare()
+    // No lockfile for the engines either (`noLock` / `--no-lock`).
+    expect(off.state.project.lockfile).toBeNull()
+    expect(off.state.project.lockfilePath).toBeNull()
+    expect(off.state.lockfilePolicy.mode).toBe('off')
+    vi.stubEnv('CI', 'true')
+    const ci = await state(files)
+    await ci.state.prepare()
+    expect(ci.state.lockfilePolicy).toMatchObject({ mode: 'frozen', reason: '`CI` is set' })
+    vi.stubEnv('CI', 'false')
+    const local = await state(files)
+    await local.state.prepare()
+    expect(local.state.lockfilePolicy.mode).toBe('auto')
+  })
+
+  it('summarises the lockfile mode, the jsr: route and the allow-list in the debug output', async () => {
+    vi.stubEnv('CI', '')
+    const { state: plugin } = await state(
+      { 'deno.json': { imports: { colors: 'https://unpkg.com/kleur@4.1.5/colors.mjs' } } },
+      { debug: true },
+    )
+    const info = vi.fn<(message: string) => void>()
+    plugin.setLogTarget({ info })
+    await plugin.prepare()
+    const lines = info.mock.calls.map(([line]) => String(line))
+    expect(lines).toContain('[core] lockfile none, mode auto (no deno.lock)')
+    expect(lines).toContain(
+      '[core] jsr: packages mirrored from the JSR registry (npm packages come from the Deno cache)',
+    )
+    expect(
+      lines.some((line) => /^\[core\] allowImport: deno\.land:443, .*unpkg\.com:443/.test(line)),
+    ).toBe(true)
+  })
+
+  it('names the command that fills the cache for cachedOnly hints', async () => {
+    const { state: plugin } = await state({ 'deno.json': {}, 'src/main.ts': 'export {}' })
+    plugin.setHints({ input: ['src/main.ts', 'jsr:@std/path@1'] })
+    await plugin.prepare()
+    expect(plugin.cacheCommand()).toBe('deno cache src/main.ts jsr:@std/path@1')
+    plugin.setHints({ input: [] })
+    expect(plugin.cacheCommand()).toBe('deno install')
+  })
+
+  it('downloads through the fetch option and refuses hosts outside allowImport', async () => {
+    const cache = await freshDenoDir()
+    onTestFinished(() => cache.dispose())
+    const requests: string[] = []
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      requests.push(String(input))
+      return new Response('export const answer = 42\n', {
+        headers: { 'content-type': 'application/javascript' },
+      })
+    })
+    const { state: plugin, path } = await state(
+      { 'deno.json': {} },
+      { fetch: fetchImpl, allowImport: ['registry.test'] },
+    )
+    vi.stubEnv('DENO_DIR', cache.path)
+    await plugin.prepare()
+    const importer = path('src/main.ts')
+    const outcome = await plugin.resolve('https://registry.test/mod.js', importer)
+    expect(outcome).toMatchObject({ type: 'mirror', url: 'https://registry.test/mod.js' })
+    expect(requests).toEqual(['https://registry.test/mod.js'])
+    await expect(plugin.resolve('https://other.test/mod.js', importer)).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+      hint: expect.stringContaining('Add "other.test" to allowImport'),
+    })
+    expect(requests).toEqual(['https://registry.test/mod.js'])
+  })
+
+  it('resolves jsr: through a hand-made node_modules/@jsr package with the loader', async () => {
+    const { state: plugin, path } = await state(
+      {
+        'deno.json': {
+          nodeModulesDir: 'manual',
+          imports: { '@std/path': 'jsr:@std/path@^1' },
+        },
+        'package.json': { dependencies: { '@jsr/std__path': '^1.1.0' } },
+        'node_modules/@jsr/std__path/package.json': {
+          name: '@jsr/std__path',
+          version: '1.1.6',
+          type: 'module',
+          exports: { '.': './mod.js', './posix/join': './posix/join.js' },
+        },
+        'node_modules/@jsr/std__path/mod.js': 'export * from "./posix/join.js"\n',
+        'node_modules/@jsr/std__path/posix/join.js':
+          'export const join = (...parts) => parts.join("/")\n',
+      },
+      // jsr: imports of Deno platform builds stay external.
+      { platform: 'browser' },
+    )
+    await plugin.prepare()
+    expect(plugin.jsrRoute).toBe('node_modules')
+    const importer = path('src/main.ts')
+    const packageDir = path('node_modules/@jsr/std__path')
+    for (const specifier of ['@std/path/posix/join', 'jsr:@std/path@^1/posix/join']) {
+      expect(await plugin.resolve(specifier, importer)).toEqual({
+        type: 'npm-redirect',
+        request: '@jsr/std__path/posix/join',
+        resolveDir: packageDir,
+        packageJsonPath: join(packageDir, 'package.json'),
+        rawSpecifier: 'npm:@jsr/std__path@^1/posix/join',
+        fallbackPath: join(packageDir, 'posix', 'join.js'),
+        query: '',
+        sideEffects: null,
+      })
+    }
+    // Nothing was mirrored from jsr.io.
+    await plugin.flush()
+    expect(existsSync(join(plugin.mirror.root, 'https', 'jsr.io'))).toBe(false)
+  })
+
+  it('writes the sidecar deno.json and deno.lock for the Deno platform only, never over the project', async () => {
+    const {
+      state: plugin,
+      path,
+      root,
+    } = await state(
+      { 'deno.json': { imports: { kleur: 'npm:kleur@^4' } }, 'deno.lock': lock },
+      { emitDenoConfig: true },
+    )
+    await plugin.prepare()
+    expect(plugin.platform).toBe('deno')
+    plugin.recordExternal('deno', { id: 'npm:kleur@4.1.5' })
+    plugin.recordExternal('deno', { id: 'node:fs' })
+    const out = path('dist')
+    expect(await writeSidecar(plugin, out)).toEqual([
+      join(out, 'deno.json'),
+      join(out, 'deno.lock'),
+    ])
+    expect(JSON.parse(await readFile(join(out, 'deno.json'), 'utf8'))).toEqual({
+      lock: './deno.lock',
+      nodeModulesDir: 'none',
+    })
+    expect(JSON.parse(await readFile(join(out, 'deno.lock'), 'utf8'))).toEqual({
+      version: '5',
+      specifiers: { 'npm:kleur@4': '4.1.5', 'npm:kleur@4.1.5': '4.1.5' },
+      npm: { 'kleur@4.1.5': { integrity: 'sha512-x' } },
+    })
+    // Not for other platforms, and never over the project's own files.
+    expect(await writeSidecar(plugin, path('browser'), { platform: 'browser' })).toEqual([])
+    const warn = vi.fn<(message: string) => void>()
+    plugin.setLogTarget({ warn })
+    expect(await writeSidecar(plugin, root)).toEqual([])
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('belongs to the project'))
+    expect(JSON.parse(await readFile(path('deno.json'), 'utf8'))).toEqual({
+      imports: { kleur: 'npm:kleur@^4' },
+    })
+    const off = await state({ 'deno.json': {} })
+    await off.state.prepare()
+    expect(await writeSidecar(off.state, off.path('dist'))).toEqual([])
   })
 })

@@ -1037,3 +1037,152 @@ describe('ensureMirrored with the loader engine', () => {
     },
   )
 })
+
+/** A mirror whose allow-list and lockfile checks the tests control. */
+function checkedMirror(
+  dir: TempDir,
+  engine: FakeEngine,
+  options: {
+    allowed?: (url: string) => boolean
+    drift?: (specifier: string) => boolean
+    keepJsrSpecifiers?: boolean
+  } = {},
+): { mirror: Mirror; checked: string[] } {
+  const checked: string[] = []
+  const mirror = createMirror({
+    cacheDir: dir.path('cache'),
+    generation: 'abcdef12',
+    engine: () => Promise.resolve(engine),
+    lockfile: null,
+    logger: createSilentLogger(),
+    checkRemote: (url, context) => {
+      if (options.allowed?.(url) === false) {
+        const from = context.redirectedFrom === undefined ? '' : ` from ${context.redirectedFrom}`
+        throw new DenoPluginError('DISALLOWED_HOST', `${url}${from} is not allowed`)
+      }
+    },
+    checkLockfile: (check) => {
+      checked.push(check.specifier)
+      if (options.drift?.(check.specifier) === true) {
+        throw new DenoPluginError('LOCKFILE_FROZEN_DRIFT', `${check.specifier} drifted`)
+      }
+    },
+    keepJsrSpecifiers: options.keepJsrSpecifiers,
+  })
+  return { mirror, checked }
+}
+
+const notEvil = (url: string): boolean => !url.startsWith('https://evil.test/')
+
+describe('allow-list, lockfile and jsr: route checks (R15, R5, R11)', () => {
+  it('refuses static imports and redirects to disallowed hosts, leaving dynamic ones to the runtime', async () => {
+    const dir = await tempDir()
+    onTestFinished(() => dir.dispose())
+    const engine = new FakeEngine({
+      'https://deno.land/x/a.js': {
+        code: 'import "https://evil.test/b.js";\n',
+        mediaType: 'JavaScript',
+      },
+      'https://deno.land/x/dyn.js': {
+        code: 'export const load = () => import("https://evil.test/c.js");\n',
+        mediaType: 'JavaScript',
+      },
+      'https://deno.land/x/r.js': {
+        code: 'export {};\n',
+        url: 'https://evil.test/r.js',
+        mediaType: 'JavaScript',
+      },
+    })
+    const { mirror } = checkedMirror(dir, engine, { allowed: notEvil })
+    await expect(mirror.ensureMirrored('https://deno.land/x/a.js')).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+      message: 'https://evil.test/b.js is not allowed',
+    })
+    expect(engine.loads).not.toContain('default https://evil.test/b.js')
+    const dynamic = await mirror.ensureMirrored('https://deno.land/x/dyn.js')
+    expect(await readFile(dynamic.path, 'utf8')).toContain('import("https://evil.test/c.js")')
+    await expect(mirror.ensureMirrored('https://deno.land/x/r.js')).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+      message: 'https://evil.test/r.js from https://deno.land/x/r.js is not allowed',
+    })
+  })
+
+  it('checks the imports of files reused from an earlier build again', async () => {
+    const dir = await tempDir()
+    onTestFinished(() => dir.dispose())
+    const modules = {
+      'https://deno.land/x/a.js': {
+        code: 'import "https://evil.test/b.js";\n',
+        mediaType: 'JavaScript' as const,
+      },
+      'https://evil.test/b.js': { code: 'export {};\n', mediaType: 'JavaScript' as const },
+    }
+    const first = checkedMirror(dir, new FakeEngine(modules))
+    await first.mirror.ensureMirrored('https://deno.land/x/a.js')
+    await first.mirror.flush()
+    const engine = new FakeEngine(modules)
+    const strict = checkedMirror(dir, engine, { allowed: notEvil })
+    await expect(strict.mirror.ensureMirrored('https://deno.land/x/a.js')).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+    })
+    expect(engine.loads).toEqual([])
+  })
+
+  it('compares code imports with the lockfile, not raw ones, and fails on frozen drift', async () => {
+    const dir = await tempDir()
+    onTestFinished(() => dir.dispose())
+    const engine = new FakeEngine({
+      'https://deno.land/x/a.js': {
+        code: [
+          'import "./b.js";',
+          'import kleur from "npm:kleur@^4";',
+          'import text from "./data.txt" with { type: "text" };',
+          '',
+        ].join('\n'),
+        mediaType: 'JavaScript',
+      },
+      'https://deno.land/x/b.js': { code: 'export {};\n', mediaType: 'JavaScript' },
+      'https://deno.land/x/data.txt': { code: 'hello', mediaType: 'Unknown' },
+    })
+    engine.resolutions.set('npm:kleur@^4', {
+      kind: 'npm',
+      url: 'file:///cache/kleur/4.1.5/index.mjs',
+      path: '/cache/kleur/4.1.5/index.mjs',
+      mediaType: 'Mjs',
+      npm: {
+        name: 'kleur',
+        version: '4.1.5',
+        subpath: '',
+        packageDir: '/cache/kleur/4.1.5',
+        packageJsonPath: '/cache/kleur/4.1.5/package.json',
+      },
+    })
+    const { mirror, checked } = checkedMirror(dir, engine)
+    await mirror.ensureMirrored('https://deno.land/x/a.js')
+    // The closure checks the recorded module imports again, by URL.
+    expect(checked.toSorted()).toEqual(['./b.js', 'https://deno.land/x/b.js', 'npm:kleur@^4'])
+    const frozenDir = await tempDir()
+    onTestFinished(() => frozenDir.dispose())
+    const frozen = checkedMirror(frozenDir, engine, {
+      drift: (specifier) => specifier.startsWith('npm:'),
+    })
+    await expect(frozen.mirror.ensureMirrored('https://deno.land/x/a.js')).rejects.toMatchObject({
+      code: 'LOCKFILE_FROZEN_DRIFT',
+    })
+  })
+
+  it('keeps jsr: imports for resolveId on the node_modules/@jsr route', async () => {
+    const dir = await tempDir()
+    onTestFinished(() => dir.dispose())
+    const engine = new FakeEngine({
+      'https://deno.land/x/a.js': {
+        code: 'import { isWindows } from "jsr:@std/internal@^1.0.14/os";\nexport { isWindows };\n',
+        mediaType: 'JavaScript',
+      },
+    })
+    const { mirror } = checkedMirror(dir, engine, { keepJsrSpecifiers: true })
+    const file = await mirror.ensureMirrored('https://deno.land/x/a.js')
+    expect(await readFile(file.path, 'utf8')).toContain('from "jsr:@std/internal@^1.0.14/os"')
+    expect(engine.loads).toEqual(['default https://deno.land/x/a.js'])
+  })
+})

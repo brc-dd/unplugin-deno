@@ -23,8 +23,10 @@
  *
  * @module
  */
-import { dirname } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import type {
+  BuildOptions,
+  BuildResult,
   OnEndResult,
   OnLoadArgs,
   OnLoadResult,
@@ -42,6 +44,7 @@ import { isGlobalCachePath, isNodeModulesPath } from '../../core/npm.js'
 import type { ResolvedOptions } from '../../core/options.js'
 import type { HostMarkerOutcome, ResolveOutcome } from '../../core/resolve.js'
 import { packageJsonDependencyNames, resolveIdFilter } from '../../core/resolve.js'
+import { writeSidecar } from '../../core/sidecar.js'
 import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState, StateHints } from '../../core/state.js'
 import { WASM_MODULE_ID_FILTER } from '../../core/wasm.js'
@@ -245,7 +248,7 @@ async function setup(state: PluginState, shared: Shared, build: PluginBuild): Pr
       )
     }
   }
-  build.onEnd(() => onEnd(context))
+  build.onEnd((result) => onEnd(context, result))
 }
 
 /**
@@ -422,7 +425,7 @@ function warnAboutStaleFilters(state: PluginState, filters: Filters): void {
   )
 }
 
-async function onEnd(context: BuildContext): Promise<OnEndResult> {
+async function onEnd(context: BuildContext, result: BuildResult): Promise<OnEndResult> {
   const { state, shared } = context
   if (context.running) {
     context.running = false
@@ -434,7 +437,40 @@ async function onEnd(context: BuildContext): Promise<OnEndResult> {
     state.logger.warn(`Cannot write the mirror manifest: ${String(toMessage(error).text)}`)
   }
   state.reportDuplicates()
-  return { warnings: shared.warnings.drain() }
+  const errors: PartialMessage[] = []
+  // The sidecar deno.json and deno.lock of Deno platform output (S3), next to the entry output.
+  const dir = result.errors.length === 0 ? entryDirectory(context, result) : undefined
+  if (dir !== undefined && !context.failed) {
+    try {
+      await writeSidecar(state, dir)
+    } catch (error) {
+      errors.push(toMessage(error))
+    }
+  }
+  return { errors, warnings: shared.warnings.drain() }
+}
+
+/**
+ * The directory of the first entry point's output (from the metafile when there is one), else
+ * `outdir` or the directory of `outfile`; `undefined` when esbuild writes nothing (`write: false`)
+ * or the plugin writes no sidecar.
+ */
+function entryDirectory(context: BuildContext, result: BuildResult): string | undefined {
+  const { state, root } = context
+  if (state.options.emitDenoConfig === false || !state.ready) return undefined
+  const options: BuildOptions = context.build.initialOptions
+  if (options.write === false) {
+    state.logger.debug('[sidecar] esbuild writes no files (`write: false`); no deno.json/deno.lock')
+    return undefined
+  }
+  const outputs = Object.entries(result.metafile?.outputs ?? {})
+  const entry = outputs.find(
+    ([file, output]) => output.entryPoint !== undefined && /\.m?js$/.test(file),
+  )
+  if (entry !== undefined) return dirname(resolve(root, entry[0]))
+  if (options.outdir !== undefined) return resolve(root, options.outdir)
+  if (options.outfile !== undefined) return dirname(resolve(root, options.outfile))
+  return undefined
 }
 
 /** `onDispose`: the last build or context of the plugin instance disposes the engines. */

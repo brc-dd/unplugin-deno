@@ -13,6 +13,7 @@ import {
 const root = resolve('/project')
 const context = { root, env: {} }
 const hook = (): null => null
+const fetchImpl: typeof fetch = async () => new Response('')
 
 function resolveWith(
   options: Options | undefined,
@@ -35,6 +36,7 @@ describe('resolveOptions', () => {
       lockfile: 'auto',
       cachedOnly: false,
       allowImport: [...DEFAULT_ALLOW_IMPORT],
+      fetch: undefined,
       exclude: [],
       importers: { include: [], exclude: [] },
       external: [],
@@ -54,16 +56,31 @@ describe('resolveOptions', () => {
     expect(resolveWith({})).toEqual(resolveWith(undefined))
   })
 
-  it("uses Deno's --allow-import defaults", () => {
+  it("uses Deno 2.9's --allow-import defaults (HTTPS only)", () => {
     expect(DEFAULT_ALLOW_IMPORT).toEqual([
-      'deno.land',
-      'jsr.io',
-      'esm.sh',
-      'cdn.jsdelivr.net',
-      'raw.githubusercontent.com',
-      'gist.githubusercontent.com',
+      'deno.land:443',
+      'jsr.io:443',
+      'esm.sh:443',
+      'raw.esm.sh:443',
+      'cdn.jsdelivr.net:443',
+      'raw.githubusercontent.com:443',
+      'gist.githubusercontent.com:443',
     ])
     expect(Object.isFrozen(DEFAULT_ALLOW_IMPORT)).toBe(true)
+  })
+
+  it('accepts allowImport hosts in the --allow-import syntax', () => {
+    const allowImport = ['*', 'example.com', 'localhost:8000', '*.example.org', '[::1]:8443']
+    expect(resolveWith({ allowImport }).allowImport).toEqual(allowImport)
+    expect(resolveWith({ allowImport: ['127.0.0.1'] }).allowImport).toEqual(['127.0.0.1'])
+  })
+
+  it('takes a fetch function and resolves emitDenoConfig directories against cwd', () => {
+    expect(resolveWith({ fetch: fetchImpl }).fetch).toBe(fetchImpl)
+    expect(resolveWith({ emitDenoConfig: true }).emitDenoConfig).toBe(true)
+    expect(resolveWith({ cwd: 'app', emitDenoConfig: 'dist/server' }).emitDenoConfig).toBe(
+      resolve(root, 'app', 'dist/server'),
+    )
   })
 
   it('resolves paths against the host root and cwd', () => {
@@ -104,7 +121,7 @@ describe('resolveOptions', () => {
       external: ['npm:*'],
       bundle: ['npm:preact'],
       pinExternals: false,
-      emitDenoConfig: 'server.deno.json',
+      emitDenoConfig: 'dist',
       importAttributes: false,
       importMetaMain: false,
       env: { prefix: 'PUBLIC_', allow: ['MODE'], files: ['.env'] },
@@ -128,7 +145,7 @@ describe('resolveOptions', () => {
       external: ['npm:*'],
       bundle: ['npm:preact'],
       pinExternals: false,
-      emitDenoConfig: 'server.deno.json',
+      emitDenoConfig: resolve(root, 'dist'),
       importAttributes: false,
       importMetaMain: false,
       env: { prefix: ['PUBLIC_'], allow: ['MODE'], files: ['.env'] },
@@ -222,7 +239,13 @@ describe('resolveOptions', () => {
     [{ env: 'PUBLIC_' }, 'Invalid option `env`'],
     [{ env: { allow: 'X' } }, 'Invalid option `env.allow`'],
     [{ checks: { lockfile: 1 } }, 'Invalid option `checks.lockfile`'],
-    [{ emitDenoConfig: '' }, 'Invalid option `emitDenoConfig`'],
+    [{ emitDenoConfig: '' }, 'Invalid option `emitDenoConfig`: expected a boolean or a directory'],
+    [{ allowImport: 'example.com' }, 'Invalid option `allowImport`: expected an array'],
+    [{ allowImport: ['https://example.com'] }, 'Invalid option `allowImport`: expected host names'],
+    [{ allowImport: ['example.com/x'] }, 'Invalid option `allowImport`'],
+    [{ allowImport: [42] }, 'Invalid option `allowImport`'],
+    [{ fetch: 'https://proxy' }, 'Invalid option `fetch`: expected a function'],
+    [{ lockfile: 'strict' }, "Invalid option `lockfile`: expected one of 'auto', 'frozen', 'off'"],
     [{ denoGlobals: 'throw' }, 'Invalid option `denoGlobals`'],
     [{ wasm: 'yes' }, 'Invalid option `wasm`: expected a boolean'],
     [{ importMetaMain: 1 }, 'Invalid option `importMetaMain`: expected a boolean'],

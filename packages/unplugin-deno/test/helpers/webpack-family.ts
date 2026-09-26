@@ -94,6 +94,16 @@ export type WatchHandler = (error: Error | undefined, errors: string | undefined
 export interface WatchBuilds {
   /** Waits for a build whose `values` satisfy `predicate` and returns them. */
   next(predicate: (values: Record<string, unknown>) => boolean): Promise<Record<string, unknown>>
+  /**
+   * Makes a change with `write` and waits for a build whose `values` satisfy `predicate`, making
+   * it again (a new modification time) when no such build came within `retryMs`: a watcher can
+   * miss a file written right after a build, before it watches again (seen with Bun).
+   */
+  after(
+    write: () => Promise<void>,
+    predicate: (values: Record<string, unknown>) => boolean,
+    retryMs?: number,
+  ): Promise<Record<string, unknown>>
   /** Stops watching and closes the compiler. */
   close(): Promise<void>
 }
@@ -130,18 +140,43 @@ export function watchBuilds(
       wake?.()
     })
   })
+  /** The values of a build satisfying `predicate`, or `undefined` when none came within `ms`. */
+  const waitFor = async (
+    predicate: (values: Record<string, unknown>) => boolean,
+    ms: number,
+  ): Promise<Record<string, unknown> | undefined> => {
+    const deadline = performance.now() + ms
+    for (;;) {
+      const found = results.find(
+        (result) => result.values !== undefined && predicate(result.values),
+      )
+      if (found?.values !== undefined) return found.values
+      const failed = results.find((result) => result.error !== undefined)
+      if (failed !== undefined) throw new Error(failed.error)
+      const remaining = deadline - performance.now()
+      if (remaining <= 0) return undefined
+      await new Promise<void>((resolve) => {
+        // No timer without a deadline (an infinite delay would fire after 1 ms).
+        const timer = Number.isFinite(remaining) ? setTimeout(resolve, remaining) : undefined
+        wake = () => {
+          clearTimeout(timer)
+          resolve()
+        }
+      })
+    }
+  }
   return {
     async next(predicate) {
-      for (;;) {
-        const found = results.find(
-          (result) => result.values !== undefined && predicate(result.values),
-        )
-        if (found?.values !== undefined) return found.values
-        const failed = results.find((result) => result.error !== undefined)
-        if (failed !== undefined) throw new Error(failed.error)
-        await new Promise<void>((resolve) => {
-          wake = resolve
-        })
+      const values = await waitFor(predicate, Number.POSITIVE_INFINITY)
+      if (values === undefined) throw new Error('unreachable: no deadline')
+      return values
+    },
+    async after(write, predicate, retryMs = 3000) {
+      for (let attempt = 1; ; attempt++) {
+        await write()
+        const values = await waitFor(predicate, retryMs)
+        if (values !== undefined) return values
+        if (attempt === 20) throw new Error(`no build after ${attempt} attempts to make the change`)
       }
     },
     close: stop,

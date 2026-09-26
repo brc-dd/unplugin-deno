@@ -53,6 +53,16 @@ export function foreignNodeModulesMessage(info: NodeModulesInfo): string | undef
 }
 
 /**
+ * The hint of a `CACHED_ONLY_MISS` (R13): what to download and the command that fills Deno's cache
+ * for the build (`deno cache <entries>`, or `deno install` when the entries are unknown).
+ */
+export function cachedOnlyHint(specifier: string | undefined, command: string): string {
+  const what = specifier === undefined ? 'the missing modules' : `"${specifier}"`
+  const alternative = command === 'deno install' ? '' : ' (or `deno install`)'
+  return `Run \`${command}\`${alternative} with network access to download ${what} into Deno's cache (DENO_DIR), then build again; or turn off \`cachedOnly\`.`
+}
+
+/**
  * The npm packages bundled per platform (X4): records `name@version` as the resolver meets them,
  * and reports the names bundled in more than one version.
  */

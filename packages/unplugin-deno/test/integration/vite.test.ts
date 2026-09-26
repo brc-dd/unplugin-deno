@@ -20,6 +20,7 @@ import {
   DENO_AVAILABLE,
   fixture,
   importMetaMainCount,
+  runWithSidecar,
   warningsWith,
 } from './core-suite.js'
 
@@ -216,6 +217,52 @@ function viteBuildSuite(major: 7 | 8): void {
           env,
         })
         expect(JSON.parse(stdout)).toEqual(project.manifest.expect?.values)
+      },
+    )
+
+    it(
+      'writes the sidecar deno.json and deno.lock for the ssr environment only (emitDenoConfig)',
+      timeout,
+      async () => {
+        const project = await fixture('vite-ssr-deno')
+        const vite = await load()
+        const out = await build(
+          project.root,
+          project.manifest.entries,
+          { emitDenoConfig: true },
+          { vite, environment: 'ssr' },
+        )
+        expect(outputFiles(out.outDir).toSorted()).toEqual(['deno.json', 'deno.lock', 'server.js'])
+        const lock = JSON.parse(await readFile(join(out.outDir, 'deno.lock'), 'utf8')) as {
+          jsr: Record<string, unknown>
+          npm: Record<string, unknown>
+        }
+        expect(Object.keys(lock.npm)).toEqual(['kleur@4.1.5'])
+        expect(Object.keys(lock.jsr)).toContain('@std/path@1.1.6')
+        // The client (browser) environment writes none.
+        const client = await build(
+          project.root,
+          ['src/answer.ts'],
+          { emitDenoConfig: true },
+          { vite },
+        )
+        expect(outputFiles(client.outDir).filter((file) => file.startsWith('deno.'))).toEqual([])
+      },
+    )
+
+    it.skipIf(!DENO_AVAILABLE)(
+      'runs the ssr output with the sidecar under `deno run --frozen --cached-only` (skipped without a deno binary)',
+      timeout,
+      async () => {
+        const project = await fixture('vite-ssr-deno')
+        const vite = await load()
+        const out = await build(
+          project.root,
+          project.manifest.entries,
+          { emitDenoConfig: true },
+          { vite, environment: 'ssr' },
+        )
+        expect(await runWithSidecar(out.outDir)).toEqual(project.manifest.expect?.values)
       },
     )
   })

@@ -1,0 +1,9 @@
+{
+  "title": "Private registries: an npm package from NPM_CONFIG_REGISTRY with an .npmrc auth token, and a JSR package from JSR_URL (the deno engine) or through the fetch option (the loader), both served by a local mock registry (test/helpers/mock-registry.ts)",
+  "entries": ["src/npm.ts", "src/jsr.ts"],
+  "hosts": ["rolldown", "rollup", "esbuild"],
+  "expect": {
+    "npm": { "greeting": "hello from the mock npm registry" },
+    "jsr": { "answer": 42 }
+  }
+}

@@ -39,9 +39,11 @@ import type { ScannedImport } from '../utils/lexer.js'
 import { LexerError, scanModule } from '../utils/lexer.js'
 import type { PathFlavor } from '../utils/path.js'
 import { HOST_PATH_FLAVOR } from '../utils/path.js'
+import type { AllowImportContext } from './allow-import.js'
 import { isDenoType } from './attributes.js'
 import type { DenoType } from './id.js'
 import { isMirrorPath, splitQuery, withDenoType } from './id.js'
+import type { LockCheck } from './lockfile-policy.js'
 import { pinSpecifier } from './platform.js'
 
 /**
@@ -79,6 +81,18 @@ export interface MirrorOptions {
   logger: Logger
   /** Path syntax (tests use `win32` on every OS for the layout rules). */
   flavor?: PathFlavor
+  /**
+   * Throws `DISALLOWED_HOST` for a remote URL the allow-list refuses (R15): called for the remote
+   * imports of mirrored modules before they are loaded, and for the final URL of a redirect.
+   */
+  checkRemote?: ((url: string, context: AllowImportContext) => void) | undefined
+  /** Compares a resolution inside a remote module with `deno.lock` (R5); may throw. */
+  checkLockfile?: ((check: LockCheck, importer: string) => void) | undefined
+  /**
+   * Keep `jsr:` imports of remote modules as they are, for `resolveId` to resolve (the
+   * `node_modules/@jsr` route, R11: JSR sources are never mirrored then).
+   */
+  keepJsrSpecifiers?: boolean | undefined
 }
 
 /** The mirror of one generation; see the module documentation. */
@@ -507,7 +521,27 @@ class MirrorImpl implements Mirror {
     return first
   }
 
+  /**
+   * The imports of `file` recorded in the manifest, checked against the allow-list and the
+   * lockfile's `remote` entries again: a file reused from an earlier build of the generation was
+   * rewritten under that build's options (`allowImport`, a lockfile mode that allowed drift).
+   * Requirements of JSR packages are checked only when a file is written.
+   */
   #dependencies(manifest: ManifestData, file: MirroredFile): Array<[MirrorKind, string]> {
+    const dependencies = this.#recordedDependencies(manifest, file)
+    for (const [kind, url] of dependencies) {
+      if (!/^https?:/.test(url)) continue
+      this.#options.checkRemote?.(url, { importer: file.url })
+      if (kind !== 'module') continue
+      this.#options.checkLockfile?.(
+        { specifier: url, resolved: { kind: 'remote', url, mediaType: 'Unknown' } },
+        file.url,
+      )
+    }
+    return dependencies
+  }
+
+  #recordedDependencies(manifest: ManifestData, file: MirroredFile): Array<[MirrorKind, string]> {
     const entry = (file.kind === 'module' ? manifest.modules : manifest.assets)[file.url]
     if (entry === undefined) return []
     return [
@@ -592,6 +626,10 @@ class MirrorImpl implements Mirror {
       loaded = moduleOf(await (await this.#options.engine()).load(url, 'default'), url)
       // A module import of a non-code URL (Wasm, JSON) is mirrored as an asset.
       if (!isCodeMediaType(loaded.mediaType)) loaded = await this.#loadRaw(loaded.url)
+    }
+    if (loaded.url !== url && /^https?:/.test(loaded.url)) {
+      // A redirect to another host must be allowed too (R15).
+      this.#options.checkRemote?.(loaded.url, { redirectedFrom: url })
     }
     const effective: MirrorKind =
       kind === 'module' && !isCodeMediaType(loaded.mediaType) ? 'asset' : kind
@@ -750,11 +788,21 @@ class MirrorImpl implements Mirror {
     json: boolean,
   ): Promise<{ specifier: string; dep?: { url: string; kind: MirrorKind } } | undefined> {
     const specifier = entry.specifier as string
+    const mark = (value: string): string =>
+      denoType === undefined ? value : withDenoType(value, denoType)
+    if (this.#options.keepJsrSpecifiers === true && specifier.startsWith('jsr:')) {
+      // resolveId takes it through node_modules/@jsr (R11).
+      return { specifier: mark(specifier) }
+    }
     let target: ResolvedModule
     try {
       target = await engine.resolve(specifier, referrer, 'import')
+      // Deno locks code and JSON imports, not `text`/`bytes`/`css` ones.
+      if (denoType === undefined)
+        this.#options.checkLockfile?.({ specifier, resolved: target }, referrer)
     } catch (error) {
       if (!isDenoPluginError(error)) throw error
+      if (error.code === 'LOCKFILE_FROZEN_DRIFT') throw error
       // The loader's graph records `css` imports (and `text`/`bytes` ones without the unstable
       // flag) as errors; a relative or absolute URL target resolves against the referrer.
       const url = denoType === undefined && !json ? undefined : attributeTarget(specifier, referrer)
@@ -769,11 +817,21 @@ class MirrorImpl implements Mirror {
         throw error
       }
     }
-    const mark = (value: string): string =>
-      denoType === undefined ? value : withDenoType(value, denoType)
     switch (target.kind) {
       case 'remote':
       case 'data': {
+        if (target.kind === 'remote' && this.#options.checkRemote !== undefined) {
+          try {
+            this.#options.checkRemote(target.url, { importer: referrer })
+          } catch (error) {
+            // A dynamic import fails at runtime (as in Deno), not the build.
+            if (!entry.dynamic || !isDenoPluginError(error)) throw error
+            this.#options.logger.debug(
+              `[mirror] left import("${specifier}") in ${referrer} unchanged: ${error.message}`,
+            )
+            return undefined
+          }
+        }
         const kind: MirrorKind = denoType !== undefined || json ? 'asset' : 'module'
         const dep = await this.#pathOf(target.url, kind)
         return { specifier: mark(relativeSpecifier(from, dep.path, this.#flavor)), dep }

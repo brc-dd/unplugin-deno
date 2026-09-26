@@ -10,11 +10,15 @@ import { EngineResolveError } from '../engine/errors.js'
 import { mediaTypeFromUrl } from '../engine/media-type.js'
 import type { Engine, LoadedModule, ResolutionMode, ResolvedModule } from '../engine/types.js'
 import { toFileUrl } from '../utils/path.js'
+import { createImportAllowList, projectRemoteUrls } from './allow-import.js'
+import { jsrRouteFor } from './jsr-npm.js'
+import { LockfilePolicy } from './lockfile-policy.js'
 import type { Mirror } from './mirror.js'
 import { createMirror } from './mirror.js'
 import type { NpmStrategy } from './npm.js'
 import type { Options, Platform } from './options.js'
-import { resolveOptions } from './options.js'
+import { DEFAULT_ALLOW_IMPORT, resolveOptions } from './options.js'
+import type { ExternalRecord } from './sidecar.js'
 import type { Resolver, ResolverState } from './resolve.js'
 import {
   BROAD_RESOLVE_ID_FILTER,
@@ -798,5 +802,252 @@ describe('resolveIdFilter', () => {
     expect(packageJsonDependencyNames(project)).toEqual(['@types/node', 'react'])
     expect(resolveIdFilter(project, { npm: 'auto' }, 'deno').test('react/jsx-runtime')).toBe(true)
     expect(resolveIdFilter(project, { npm: 'node_modules' }, 'browser').test('react')).toBe(false)
+  })
+})
+
+describe('resolveOwned: allowImport (R15)', () => {
+  it('refuses remote URLs of disallowed hosts before the engine or the mirror sees them', async () => {
+    const { state, dir, engine } = await setup(
+      denoJson({ colors: 'https://unpkg.com/kleur@4.1.5/colors.mjs' }),
+    )
+    const allowImport = createImportAllowList({
+      allowImport: DEFAULT_ALLOW_IMPORT,
+      projectUrls: projectRemoteUrls(state.project),
+    })
+    const resolver = createResolver({ ...state, allowImport })
+    const importer = dir.path('src/main.ts')
+    await expect(
+      resolver.resolveOwned('https://ga.jspm.io/npm:kleur@4.1.5/colors.mjs', importer),
+    ).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+      importer,
+      hint: expect.stringContaining('"ga.jspm.io"'),
+    })
+    expect(engine.calls).toEqual([])
+    // The host of an import-map URL is allowed.
+    expect(await resolver.resolveOwned('colors', importer)).toMatchObject({ type: 'mirror' })
+    // A redirect the engine reports is checked too.
+    engine.table.set('https://deno.land/x/latest.ts', {
+      kind: 'remote',
+      url: 'https://evil.test/x.ts',
+      mediaType: 'TypeScript',
+    })
+    await expect(
+      resolver.resolveOwned('https://deno.land/x/latest.ts', importer),
+    ).rejects.toMatchObject({
+      code: 'DISALLOWED_HOST',
+      message: expect.stringContaining('(redirected from https://deno.land/x/latest.ts)'),
+    })
+    // External URLs are not downloaded, so not checked.
+    const externals = createResolver({
+      ...state,
+      allowImport,
+      options: { ...state.options, external: ['https://ga.jspm.io/*'] },
+    })
+    expect(await externals.resolveOwned('https://ga.jspm.io/x.js', importer)).toEqual({
+      type: 'external',
+      id: 'https://ga.jspm.io/x.js',
+    })
+  })
+})
+
+/** A project whose deno.lock (npm:kleur@4.1.4) is older than its import map (^4.1.5). */
+const kleurFiles = (): TempFiles => ({
+  ...denoJson({ kleur: 'npm:kleur@^4.1.5' }),
+  'deno.lock': {
+    version: '5',
+    specifiers: { 'npm:kleur@4.1.4': '4.1.4' },
+    npm: { 'kleur@4.1.4': { integrity: 'sha512-x' } },
+  },
+})
+
+function policyFor(project: Project, mode: 'auto' | 'frozen', explain = true): LockfilePolicy {
+  return new LockfilePolicy({
+    decision: { mode, reason: mode === 'frozen' ? '`CI` is set' : "`lockfile: 'auto'`" },
+    project,
+    explain,
+    logger: createSilentLogger(),
+    jsrRegistries: ['https://jsr.io/'],
+    denoDirs: [],
+  })
+}
+
+/** The engine's error for a module missing from Deno's cache with `cachedOnly`. */
+function cacheMiss(specifier: string): DenoPluginError {
+  return new DenoPluginError('CACHED_ONLY_MISS', `Cannot resolve "${specifier}": not cached.`, {
+    specifier,
+    hint: 'Run `deno install`.',
+  })
+}
+
+describe('resolveOwned: the lockfile (R5, X5) and cachedOnly hints (R13)', () => {
+  it('fails a resolution deno.lock does not record in frozen mode, and allows it in auto mode', async () => {
+    const { state, dir, engine } = await setup(kleurFiles())
+    engine.table.set('npm:kleur@^4.1.5', npmModule(dir, 'kleur', '4.1.5', '', 'index.mjs'))
+    const importer = dir.path('src/main.ts')
+    const frozen = createResolver({ ...state, lockfilePolicy: policyFor(state.project, 'frozen') })
+    await expect(frozen.resolveOwned('kleur', importer)).rejects.toMatchObject({
+      code: 'LOCKFILE_FROZEN_DRIFT',
+      importer,
+      message:
+        'deno.lock is out of date: npm:kleur@^4.1.5 resolved to 4.1.5, but deno.lock has no entry for it (it locks kleur 4.1.4).',
+    })
+    const auto = createResolver({ ...state, lockfilePolicy: policyFor(state.project, 'auto') })
+    expect(await auto.resolveOwned('kleur', importer)).toMatchObject({ type: 'npm-redirect' })
+  })
+
+  it('explains cachedOnly misses: NOT_IN_LOCKFILE, and the command that fills the cache', async () => {
+    const { state, dir, engine } = await setup(kleurFiles())
+    engine.table.set('npm:kleur@^4.1.5', cacheMiss('npm:kleur@^4.1.5'))
+    engine.table.set('npm:kleur@4.1.4', cacheMiss('npm:kleur@4.1.4'))
+    const importer = dir.path('src/main.ts')
+    const resolver = createResolver({
+      ...state,
+      lockfilePolicy: policyFor(state.project, 'auto'),
+      cacheCommand: () => 'deno cache src/main.ts',
+    })
+    await expect(resolver.resolveOwned('kleur', importer)).rejects.toMatchObject({
+      code: 'NOT_IN_LOCKFILE',
+      importer,
+      message: expect.stringContaining('npm:kleur@^4.1.5 is not in deno.lock'),
+    })
+    await expect(resolver.resolveOwned('npm:kleur@4.1.4', importer)).rejects.toMatchObject({
+      code: 'CACHED_ONLY_MISS',
+      hint: 'Run `deno cache src/main.ts` (or `deno install`) with network access to download "npm:kleur@4.1.4" into Deno\'s cache (DENO_DIR), then build again; or turn off `cachedOnly`.',
+    })
+    // Without the lockfile checks, a miss stays a CACHED_ONLY_MISS.
+    const unexplained = createResolver({
+      ...state,
+      lockfilePolicy: policyFor(state.project, 'auto', false),
+    })
+    await expect(unexplained.resolveOwned('kleur', importer)).rejects.toMatchObject({
+      code: 'CACHED_ONLY_MISS',
+      hint: expect.stringContaining('`deno install`'),
+    })
+  })
+
+  it('records externals for the sidecar lockfile', async () => {
+    const { state, dir, engine } = await setup(
+      denoJson({ kleur: 'npm:kleur@^4' }),
+      {},
+      {
+        platform: 'deno',
+      },
+    )
+    const kleur = npmModule(dir, 'kleur', '4.1.5', '/colors', 'colors.mjs')
+    engine.table.set('npm:kleur@^4/colors', kleur)
+    const records: Array<[Platform, ExternalRecord]> = []
+    const resolver = createResolver({
+      ...state,
+      recordExternal: (platform, record) => records.push([platform, record]),
+    })
+    expect(await resolver.resolveOwned('kleur/colors', dir.path('src/main.ts'))).toEqual({
+      type: 'external',
+      id: 'npm:kleur@4.1.5/colors',
+    })
+    expect(await resolver.resolveOwned('node:fs', dir.path('src/main.ts'))).toEqual({
+      type: 'external',
+      id: 'node:fs',
+    })
+    expect(records).toEqual([
+      ['deno', { id: 'npm:kleur@4.1.5/colors', resolved: kleur }],
+      ['deno', { id: 'node:fs', resolved: undefined }],
+    ])
+  })
+})
+
+/** A hand-made `@jsr/std__path` package, as `jsrDepsInNodeModules` installs it. */
+const jsrStub: TempFiles = {
+  'deno.json': {
+    nodeModulesDir: 'auto',
+    jsrDepsInNodeModules: true,
+    imports: { '@std/path': 'jsr:@std/path@^1' },
+  },
+  'node_modules/@jsr/std__path/package.json': {
+    name: '@jsr/std__path',
+    version: '1.1.6',
+    type: 'module',
+    exports: { '.': './mod.js', './posix/join': './posix/join.js' },
+  },
+  'node_modules/@jsr/std__path/mod.js': 'export * from "./posix/join.js"\n',
+  'node_modules/@jsr/std__path/posix/join.js':
+    'export const join = (...parts) => parts.join("/")\n',
+}
+
+/** The engine's resolution of a file of the {@link jsrStub} package. */
+function jsrPackage(dir: TempDir, subpath: string, file: string): ResolvedModule {
+  const packageDir = dir.path('node_modules/@jsr/std__path')
+  return {
+    kind: 'npm',
+    url: toFileUrl(join(packageDir, file)),
+    path: join(packageDir, file),
+    mediaType: 'JavaScript',
+    npm: {
+      name: '@jsr/std__path',
+      version: '1.1.6',
+      subpath,
+      packageDir,
+      packageJsonPath: join(packageDir, 'package.json'),
+    },
+    sideEffects: null,
+  }
+}
+
+describe('resolveOwned: the node_modules/@jsr route (R11)', () => {
+  it('resolves jsr: specifiers and import-map keys (with subpaths) as @jsr/ npm packages', async () => {
+    const { state, dir, engine } = await setup(jsrStub)
+    expect(state.project.nodeModules.hasJsrDeps).toBe(true)
+    expect(jsrRouteFor(state.project, 'node_modules')).toEqual({
+      route: 'node_modules',
+      reason: '`"jsrDepsInNodeModules": true`',
+    })
+    engine.table.set(
+      'npm:@jsr/std__path@^1/posix/join',
+      jsrPackage(dir, '/posix/join', 'posix/join.js'),
+    )
+    engine.table.set('npm:@jsr/std__path@^1', jsrPackage(dir, '', 'mod.js'))
+    const resolver = createResolver({ ...state, jsrRoute: 'node_modules' })
+    const importer = dir.path('src/main.ts')
+    const expected = {
+      type: 'npm-redirect',
+      request: '@jsr/std__path/posix/join',
+      resolveDir: dir.path('node_modules/@jsr/std__path'),
+      packageJsonPath: dir.path('node_modules/@jsr/std__path/package.json'),
+      rawSpecifier: 'npm:@jsr/std__path@^1/posix/join',
+      fallbackPath: dir.path('node_modules/@jsr/std__path/posix/join.js'),
+      query: '',
+      sideEffects: null,
+    }
+    // An import-map subpath (which Deno 2.9.7 cannot map on this route) and a jsr: specifier.
+    expect(await resolver.resolveOwned('@std/path/posix/join', importer)).toEqual(expected)
+    expect(await resolver.resolveOwned('jsr:@std/path@^1/posix/join', importer)).toEqual(expected)
+    expect(await resolver.resolveOwned('@std/path', importer)).toMatchObject({
+      type: 'npm-redirect',
+      request: '@jsr/std__path',
+    })
+    // The JSR registry is never asked: nothing is mirrored.
+    expect(engine.calls.map(([specifier]) => specifier)).toEqual([
+      'npm:@jsr/std__path@^1/posix/join',
+      'npm:@jsr/std__path@^1/posix/join',
+      'npm:@jsr/std__path@^1',
+    ])
+  })
+
+  it('keeps jsr: specifiers on the mirror route without the layout, and pins externals as jsr:', async () => {
+    const { state, dir, engine } = await setup(denoJson({ '@std/path': 'jsr:@std/path@^1' }))
+    expect(jsrRouteFor(state.project, 'node_modules').route).toBe('mirror')
+    expect(jsrRouteFor({ ...state.project, jsrDepsInNodeModules: true }, 'deno-cache').route).toBe(
+      'mirror',
+    )
+    engine.table.set('jsr:@std/path@^1/posix/join', {
+      kind: 'remote',
+      url: 'https://jsr.io/@std/path/1.1.6/posix/join.ts',
+      mediaType: 'TypeScript',
+    })
+    const deno = createResolver({ ...state, platform: 'deno', jsrRoute: 'node_modules' })
+    expect(await deno.resolveOwned('@std/path/posix/join', dir.path('src/main.ts'))).toEqual({
+      type: 'external',
+      id: 'jsr:@std/path@1.1.6/posix/join',
+    })
   })
 })

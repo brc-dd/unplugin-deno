@@ -3,13 +3,14 @@
  * `core-suite.ts` (Rspack output described by its stats), and the adapter's own behaviour: native
  * externals, the web preset it takes over, synthesised marker modules (virtual files loaded
  * through unplugin's loader), errors at the import, coexistence with unplugin-based plugins and
- * watch mode. TypeScript is Rspack's `builtin:swc-loader` (`SWC_RULE`).
+ * watch mode; the source transforms, the `deno.json` JSX settings (`builtin:swc-loader`), the
+ * checks and Wasm modules. TypeScript is Rspack's `builtin:swc-loader` (`SWC_RULE`).
  */
 import { existsSync, readdirSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { stripVTControlCharacters } from 'node:util'
-import type { Compiler } from '@rspack/core'
+import type { Compiler, RuleSetRule } from '@rspack/core'
 import { rspack } from '@rspack/core'
 import { createUnplugin } from 'unplugin'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
@@ -18,7 +19,7 @@ import type { BuildEntries, BuildResult } from '../helpers/build.js'
 import { evaluateModule, installCssStyleSheet } from '../helpers/build.js'
 import { denoDir } from '../helpers/deno-dir.js'
 import type { RspackBuildOptions } from '../helpers/rspack.js'
-import { buildWithRspack, rspackConfig } from '../helpers/rspack.js'
+import { buildWithRspack, rspackConfig, SWC_RULE } from '../helpers/rspack.js'
 import {
   emittedCss,
   entryChunk,
@@ -32,7 +33,7 @@ import {
   watchBuilds,
 } from '../helpers/webpack-family.js'
 import { HostBuildError, outputDir } from '../helpers/webpack-stats.js'
-import { DENO_AVAILABLE, fixture } from './core-suite.js'
+import { DENO_AVAILABLE, fixture, importMetaMainCount, warningsWith } from './core-suite.js'
 
 const timeout = { timeout: 180_000 }
 
@@ -67,8 +68,10 @@ describe('the Rspack plugin', () => {
       expect(failure).toBeInstanceOf(HostBuildError)
       const { errors, modules } = failure as HostBuildError
       expect(errors).toHaveLength(1)
+      // The package is in neither the Deno cache nor deno.lock (the code says which the core
+      // checks first).
       expect(errors[0]).toMatch(
-        /is not in the Deno cache and `cachedOnly` is set\. \(CACHED_ONLY_MISS\)/,
+        /\[unplugin-deno\] .*`cachedOnly`.*\((?:CACHED_ONLY_MISS|NOT_IN_LOCKFILE)\)/,
       )
       expect(errors[0]).toContain('hint: ')
       // The message, not the plugin's stack.
@@ -301,6 +304,31 @@ describe('core-platform-deno (rspack)', () => {
     },
   )
 
+  it(
+    'writes the sidecar deno.json and deno.lock next to the output (emitDenoConfig)',
+    timeout,
+    async () => {
+      const project = await fixture('core-platform-deno')
+      const out = await bundle(
+        project.root,
+        entries,
+        { platform: 'deno', emitDenoConfig: true },
+        { target: 'node' },
+      )
+      expect(JSON.parse(await readFile(join(out.outDir, 'deno.json'), 'utf8'))).toEqual({
+        lock: './deno.lock',
+        nodeModulesDir: 'none',
+      })
+      const lock = JSON.parse(await readFile(join(out.outDir, 'deno.lock'), 'utf8')) as {
+        specifiers: Record<string, string>
+        jsr: Record<string, unknown>
+        npm: Record<string, unknown>
+      }
+      expect(Object.keys(lock.jsr)).toEqual(['@std/internal@1.0.14', '@std/path@1.1.6'])
+      expect(Object.keys(lock.npm)).toEqual(['kleur@4.1.5'])
+    },
+  )
+
   it('derives the Deno platform from target node and a deno.json', timeout, async () => {
     const project = await fixture('core-platform-deno')
     const expected = project.manifest.expect as { externals: string[] }
@@ -445,12 +473,294 @@ describe('webpack-watch (rspack)', () => {
     onTestFinished(() => builds.close())
     expect(await builds.next(() => true)).toEqual(expected.first)
     const configFile = project.path('deno.json')
-    await writeFile(
-      configFile,
-      (await readFile(configFile, 'utf8')).replace('./src/hello.ts', './src/goodbye.ts'),
+    const mapped = await builds.after(
+      async () =>
+        writeFile(
+          configFile,
+          (await readFile(configFile, 'utf8')).replace('./src/hello.ts', './src/goodbye.ts'),
+        ),
+      (values) => values.greeting === 'goodbye',
     )
-    expect(await builds.next((values) => values.greeting === 'goodbye')).toEqual(expected.mapped)
-    await writeFile(project.path('src/note.txt'), 'second\n')
-    expect(await builds.next((values) => values.note === 'second\n')).toEqual(expected.edited)
+    expect(mapped).toEqual(expected.mapped)
+    const edited = await builds.after(
+      () => writeFile(project.path('src/note.txt'), 'second\n'),
+      (values) => values.note === 'second\n',
+    )
+    expect(edited).toEqual(expected.edited)
+  })
+})
+
+/** Rspack keeps `import.meta.main` as written (so the plugin's replacements are visible). */
+const KEEP_IMPORT_META_MAIN: RspackBuildOptions = {
+  module: { parser: { javascript: { importMeta: { main: false } } } },
+}
+
+/** The `import.meta.main` expressions of `code` outside line comments (SWC keeps comments). */
+function importMetaMainInCode(code: string): number {
+  return importMetaMainCount(code.replaceAll(/\/\/[^\n]*/g, ''))
+}
+
+describe('core-import-meta-main (rspack)', () => {
+  it('replaces import.meta.main in modules that are not entries', timeout, async () => {
+    const project = await fixture('core-import-meta-main')
+    const out = await bundle(project.root, project.manifest.entries, {}, { target: 'web' })
+    const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+    expect(values).toEqual(expectedValues(project))
+    // Rspack evaluates import.meta.main per module unless its parser keeps it as written: then
+    // the entry keeps its own and the others (local, remote) are false.
+    const kept = await bundle(
+      project.root,
+      project.manifest.entries,
+      {},
+      { target: 'web', ...KEEP_IMPORT_META_MAIN },
+    )
+    expect(importMetaMainInCode(entryChunk(kept).code)).toBe(1)
+    expect((await evaluateModule<{ values: unknown }>(kept.entry)).values).toEqual(
+      expectedValues(project),
+    )
+    const untouched = await bundle(
+      project.root,
+      project.manifest.entries,
+      { importMetaMain: false },
+      { target: 'web', ...KEEP_IMPORT_META_MAIN },
+    )
+    expect(importMetaMainInCode(entryChunk(untouched).code)).toBe(3)
+  })
+})
+
+describe('core-env-inline (rspack)', () => {
+  it(
+    'inlines allowed variables for the browser from the process and .env files',
+    timeout,
+    async () => {
+      const project = await fixture('core-env-inline')
+      const files = project.manifest.expect?.files as Record<string, string>
+      for (const [name, text] of Object.entries(files)) await writeFile(project.path(name), text)
+      vi.stubEnv('PUBLIC_TARGET', 'from the process')
+      const out = await bundle(
+        project.root,
+        project.manifest.entries,
+        { env: { prefix: 'PUBLIC_' }, denoGlobals: 'off' },
+        { target: 'web' },
+      )
+      const mod = await evaluateModule<{ values: unknown; fromFile: () => unknown }>(out.entry)
+      expect(mod.values).toEqual(expectedValues(project))
+      expect(mod.fromFile()).toBeUndefined()
+      const { code } = entryChunk(out)
+      expect(code).not.toContain('PUBLIC_')
+      expect(code).toMatch(/Deno\.env\.get\(["']SECRET["']\)/)
+      expect(code).toContain('Deno.env.toObject()')
+      const listed = await bundle(
+        project.root,
+        project.manifest.entries,
+        { env: { prefix: ['PUBLIC_'], files: ['app.env'] }, denoGlobals: 'off' },
+        { target: 'web' },
+      )
+      const listedModule = await evaluateModule<{ fromFile: () => unknown }>(listed.entry)
+      expect(listedModule.fromFile()).toBe('from app.env')
+      // The Deno platform (target node and a deno.json) reads its environment at runtime.
+      const server = await bundle(
+        project.root,
+        project.manifest.entries,
+        { env: { prefix: 'PUBLIC_' } },
+        { target: 'node' },
+      )
+      expect(entryChunk(server).code).toMatch(/Deno\.env\.get\(["']PUBLIC_GREETING["']\)/)
+    },
+  )
+})
+
+describe('core-deno-globals (rspack)', () => {
+  it(
+    'reports Deno globals of local modules in browser bundles once, with the location',
+    timeout,
+    async () => {
+      const project = await fixture('core-deno-globals')
+      const expected = project.manifest.expect as { values: object; warning: string }
+      const out = await bundle(project.root, project.manifest.entries, {}, { target: 'web' })
+      const { values } = await evaluateModule<{ values: object }>(out.entry)
+      expect(values).toMatchObject(expected.values)
+      expect(warningsWith(out, 'uses `Deno.')).toEqual([expect.stringContaining(expected.warning)])
+      const quiet = await bundle(
+        project.root,
+        project.manifest.entries,
+        { denoGlobals: 'off' },
+        { target: 'web' },
+      )
+      expect(warningsWith(quiet, 'uses `Deno.')).toEqual([])
+      const server = await bundle(project.root, project.manifest.entries, {}, { target: 'node' })
+      expect(warningsWith(server, 'uses `Deno.')).toEqual([])
+    },
+  )
+
+  it("fails the module's build with denoGlobals: 'error'", timeout, async () => {
+    const project = await fixture('core-deno-globals')
+    const expected = project.manifest.expect as { warning: string }
+    const failure: unknown = await bundle(
+      project.root,
+      project.manifest.entries,
+      { denoGlobals: 'error' },
+      { target: 'web' },
+    ).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(HostBuildError)
+    const { errors, modules } = failure as HostBuildError
+    expect(errors).toEqual([expect.stringContaining(expected.warning)])
+    expect(errors[0]).toContain('(PLATFORM_INCOMPATIBLE)')
+    expect(modules).toEqual(['./src/server-only.ts'])
+  })
+})
+
+describe('core-jsx-preact (rspack)', () => {
+  it(
+    'gives builtin:swc-loader the deno.json JSX settings (react-jsx, preact)',
+    timeout,
+    async () => {
+      const project = await fixture('core-jsx-preact')
+      const out = await bundle(project.root, project.manifest.entries, {}, { target: 'web' })
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      const chunk = entryChunk(out)
+      expect(chunk.imports).toEqual([])
+      // `preact/jsx-runtime` resolved through the import map (`preact` → `npm:preact@^10`).
+      const ids = slashed(chunk.moduleIds)
+      expect(ids.some((id) => /\/preact\/10\.29\.8\/jsx-runtime\/dist\//.test(id))).toBe(true)
+      expect(warningsWith(out, 'precompile')).toEqual([])
+      // The shared rule object of the test configuration was copied, not changed.
+      expect((SWC_RULE.options as { jsc: { transform?: unknown } }).jsc.transform).toBeUndefined()
+    },
+  )
+
+  it('follows react-jsxdev, the classic runtime and precompile', timeout, async () => {
+    const project = await fixture('core-jsx-preact')
+    const config = JSON.parse(await readFile(project.path('deno.json'), 'utf8')) as object
+    // [compilerOptions, whether the preact JSX runtime is bundled, whether it is the development
+    // one (its calls pass the source location)]
+    const variants = [
+      [{ jsx: 'react-jsxdev', jsxImportSource: 'preact' }, true, true],
+      [{ jsx: 'react', jsxFactory: 'h', jsxFragmentFactory: 'Fragment' }, false, false],
+      [{ jsx: 'precompile', jsxImportSource: 'preact' }, true, false],
+    ] as const
+    for (const [compilerOptions, runtime, development] of variants) {
+      await writeFile(project.path('deno.json'), JSON.stringify({ ...config, compilerOptions }))
+      const out = await bundle(project.root, project.manifest.entries, {}, { target: 'web' })
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      const chunk = entryChunk(out)
+      // preact's jsx-dev-runtime export is the jsx-runtime file.
+      const ids = slashed(chunk.moduleIds)
+      expect(ids.some((id) => id.includes('/preact/10.29.8/jsx-runtime/'))).toBe(runtime)
+      expect(chunk.code.includes('lineNumber')).toBe(development)
+      const precompile = warningsWith(out, '"precompile"')
+      expect(precompile).toHaveLength(compilerOptions.jsx === 'precompile' ? 1 : 0)
+      for (const warning of precompile) {
+        expect(warning).toContain("not supported by SWC's JSX transform")
+      }
+    }
+  })
+
+  it(
+    'leaves JSX that builtin:swc-loader configures, and every JSX setting with jsx: host',
+    timeout,
+    async () => {
+      const project = await fixture('core-jsx-preact')
+      const options = SWC_RULE.options as { jsc: Record<string, unknown> }
+      const typescriptRule: RuleSetRule = {
+        test: SWC_RULE.test,
+        loader: 'builtin:swc-loader',
+        options: {
+          ...options,
+          jsc: {
+            ...options.jsc,
+            transform: { react: { runtime: 'classic', pragma: 'h', pragmaFrag: 'Fragment' } },
+          },
+        },
+      }
+      const classic = await bundle(
+        project.root,
+        project.manifest.entries,
+        { debug: true },
+        { target: 'web', typescriptRule },
+      )
+      const { values } = await evaluateModule<{ values: unknown }>(classic.entry)
+      expect(values).toEqual(expectedValues(project))
+      expect(
+        slashed(entryChunk(classic).moduleIds).some((id) => id.includes('/jsx-runtime/')),
+      ).toBe(false)
+      expect(infoLines(classic.logs)).toContainEqual(
+        expect.stringContaining('builtin:swc-loader configure JSX themselves'),
+      )
+      // With jsx: 'host' SWC keeps its default, React's classic runtime.
+      const hostOnly = await bundle(
+        project.root,
+        project.manifest.entries,
+        { jsx: 'host' },
+        { target: 'web' },
+      )
+      const chunk = entryChunk(hostOnly)
+      expect(chunk.code).toContain('React.createElement')
+      expect(slashed(chunk.moduleIds).some((id) => id.includes('/jsx-runtime/'))).toBe(false)
+    },
+  )
+
+  it('says what to set when no JSX loader is configured', timeout, async () => {
+    const project = await fixture('core-jsx-preact')
+    await writeFile(project.path('src/plain.js'), 'export const values = { plain: true }\n')
+    const out = await bundle(project.root, 'src/plain.js', {}, { typescriptRule: false })
+    expect(infoLines(out.logs)).toContainEqual(
+      expect.stringContaining(
+        '[rspack] deno.json configures JSX (the automatic runtime with importSource `preact`), but module.rules has no esbuild-loader or swc-loader rule',
+      ),
+    )
+  })
+})
+
+describe('core-checks (rspack)', () => {
+  it(
+    'warns about node: builtins in browser bundles and npm packages in two versions',
+    timeout,
+    async () => {
+      const project = await fixture('core-checks')
+      const expected = project.manifest.expect as { builtin: string; duplicate: string }
+      const extra: RspackBuildOptions = {
+        target: 'web',
+        externals: { 'node:path': 'module node:path' },
+      }
+      const out = await bundle(project.root, project.manifest.entries, {}, extra)
+      const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+      expect(values).toEqual(expectedValues(project))
+      expect(warningsWith(out, expected.builtin)).toHaveLength(1)
+      expect(warningsWith(out, expected.duplicate)).toEqual([
+        expect.stringContaining('(3.3.19, 5.1.16)'),
+      ])
+      const quiet = await bundle(project.root, project.manifest.entries, { checks: false }, extra)
+      expect(warningsWith(quiet, expected.builtin)).toEqual([])
+      expect(warningsWith(quiet, expected.duplicate)).toEqual([])
+    },
+  )
+})
+
+describe('core-wasm (rspack)', () => {
+  it('instantiates .wasm module imports like Deno, with their own imports', timeout, async () => {
+    const project = await fixture('core-wasm')
+    const out = await bundle(project.root, project.manifest.entries, {}, { target: 'web' })
+    const { values } = await evaluateModule<{ values: unknown }>(out.entry)
+    expect(values).toEqual(expectedValues(project))
+    const chunk = entryChunk(out)
+    expect(chunk.imports).toEqual([])
+    expect(chunk.code).toContain('new WebAssembly.Instance(')
+    expect(slashed(chunk.moduleIds)).toContain(slashed([project.path('src/offset.js')])[0])
+    expect(readdirSync(out.outDir).filter((file) => file.endsWith('.wasm'))).toEqual([])
+  })
+
+  it("leaves .wasm files to Rspack's asyncWebAssembly with wasm: false", timeout, async () => {
+    const project = await fixture('core-wasm')
+    const out = await bundle(
+      project.root,
+      project.manifest.entries,
+      { wasm: false },
+      { target: 'web' },
+    )
+    expect(entryChunk(out).code).not.toContain('new WebAssembly.Instance(')
+    expect(readdirSync(out.outDir).filter((file) => file.endsWith('.wasm'))).toHaveLength(1)
   })
 })

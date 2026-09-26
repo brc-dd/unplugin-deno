@@ -23,9 +23,12 @@ export const ERROR_CODES = [
   'RESOLVE_CONSTRAINT',
   /** Resolution failed for another reason (the cause has details). */
   'RESOLVE_FAILED',
-  /** A dependency is missing from `deno.lock`. */
+  /** A dependency is missing from `deno.lock`, so `cachedOnly` cannot resolve it. */
   'NOT_IN_LOCKFILE',
-  /** `lockfile: 'frozen'` and the resolved versions differ from `deno.lock`. */
+  /**
+   * The lockfile is frozen (`lockfile: 'frozen'`, or `'auto'` with `CI` set) and a resolution is
+   * missing from `deno.lock` or differs from it.
+   */
   'LOCKFILE_FROZEN_DRIFT',
   /** `cachedOnly: true` and a module is not in the cache. */
   'CACHED_ONLY_MISS',

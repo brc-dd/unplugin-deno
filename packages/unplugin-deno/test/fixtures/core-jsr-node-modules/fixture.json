@@ -1,0 +1,9 @@
+{
+  "title": "jsrDepsInNodeModules: jsr: specifiers and import-map keys (with subpaths) resolve to @jsr/<scope>__<name> packages installed into node_modules, never to mirrored JSR sources; deno.lock written by Deno 2.9.7 with the flag",
+  "entries": ["src/main.ts"],
+  "hosts": ["rolldown", "esbuild"],
+  "expect": {
+    "values": { "ext": ".txt", "joined": "c/d", "base": "y.txt" },
+    "packageDir": "node_modules/.deno/@jsr+std__path@1.1.6/node_modules/@jsr/std__path"
+  }
+}

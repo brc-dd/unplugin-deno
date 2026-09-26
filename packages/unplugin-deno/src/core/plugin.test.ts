@@ -47,6 +47,7 @@ describe('unpluginFactory', () => {
       'resolveId',
       'transform',
       'watchChange',
+      'writeBundle',
     ]
     expect(Object.keys(unpluginFactory({}, meta('vite'))).toSorted()).toEqual(
       [...generic, 'vite'].toSorted(),

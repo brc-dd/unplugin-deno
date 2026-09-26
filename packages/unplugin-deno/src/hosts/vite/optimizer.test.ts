@@ -196,6 +196,8 @@ describe('optimizedDependency', () => {
 describe('package files and URL registration', () => {
   it('classifies outcomes and importers, and registers scanned remote URLs', async () => {
     vi.stubEnv('DENO_DIR', await denoDir())
+    // The URL below is not in the fixture's deno.lock, which CI would freeze.
+    vi.stubEnv('CI', '')
     const project = await tempProject('vite-ssr-deno')
     onTestFinished(() => project.dispose())
     const state = new PluginState({ cwd: project.root, platform: 'browser' }, 'vite')

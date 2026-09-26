@@ -95,6 +95,15 @@ describe('denoOnlyFeatures', () => {
     ])
   })
 
+  it('finds a JSR_URL naming another registry (the loader always uses jsr.io)', () => {
+    expect(denoOnlyFeatures(project(), { JSR_URL: 'http://127.0.0.1:4507/' })).toEqual([
+      { feature: 'jsr-url', description: '`JSR_URL=http://127.0.0.1:4507/`', file: undefined },
+    ])
+    for (const JSR_URL of ['', 'https://jsr.io', 'https://jsr.io/']) {
+      expect(denoOnlyFeatures(project(), { JSR_URL })).toEqual([])
+    }
+  })
+
   it('finds the features of the engine-cli fixtures in their loaded projects', async () => {
     await using catalog = await tempProject('engine-cli-catalog')
     expect(
@@ -152,6 +161,16 @@ describe('selectEngineKind', () => {
       warning: expect.stringContaining(MISSING_DENO),
     })
     expect(selection.features).toHaveLength(1)
+    const jsrUrl = await selectEngineKind({
+      engine: 'auto',
+      project: project(),
+      denoBinary: MISSING_DENO,
+      env: { JSR_URL: 'http://127.0.0.1:4507/' },
+    })
+    expect(jsrUrl).toMatchObject({
+      kind: 'loader',
+      warning: expect.stringContaining('`JSR_URL=http://127.0.0.1:4507/`'),
+    })
   })
 
   it.skipIf(denoBinary.skipReason !== undefined)(

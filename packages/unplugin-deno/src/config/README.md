@@ -17,7 +17,8 @@ the specifier parsers), `engine/` or `hosts/`.
   `createImportMapResolver` for workspaces (member/link scopes and packages, package.json
   dependencies).
 - `version-req.ts`: Deno's specifier version requirements (lockfile keys, member version matching).
-- `lockfile.ts`: the `deno.lock` v5 reader (`pin`, `hasPackage`, `remoteIntegrity`, …).
+- `lockfile.ts`: the `deno.lock` v5 reader (`pin`, `hasPackage`, `remoteIntegrity`, …),
+  which the core's lockfile policy (drift, `lockfile: 'frozen'`) and sidecar lockfile read.
 - `project.ts`: `loadProject` assembles everything into a `Project`; `configGeneration` hashes the
   watched files.
 

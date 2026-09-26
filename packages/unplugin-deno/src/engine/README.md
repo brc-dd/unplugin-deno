@@ -8,10 +8,11 @@ Deno's resolution and loading behind one interface
   engine), `ResolvedModule`, `LoadedModule`, `MediaType`, …
 - `create.ts`: `createEngine(kind, options)` over `ENGINE_FACTORIES` (`loader`, `deno`).
 - `select.ts`: `selectEngineKind({ engine, project, denoBinary, env })` (async: it may probe
-  Deno) and `denoOnlyFeatures(project)`: `auto` picks the `deno` engine only when the project uses
-  a feature the vendored loader lacks (`catalog:` in `deno.json` imports or `package.json`
-  dependencies, globs in `links`, `jsrDepsInNodeModules`) and Deno 2.8.3+ is installed; otherwise
-  the loader, with a warning when Deno was needed.
+  Deno) and `denoOnlyFeatures(project, env)`: `auto` picks the `deno` engine only when the
+  project uses a feature the vendored loader lacks (`catalog:` in `deno.json` imports or
+  `package.json` dependencies, globs in `links`, `jsrDepsInNodeModules`, a `JSR_URL` naming
+  another registry, which the loader ignores) and Deno 2.8.3+ is installed; otherwise the loader,
+  with a warning when Deno was needed.
 - `errors.ts`: `EngineResolveError`, a `DenoPluginError` that says whether a missing module is an
   optional dependency of the importing npm package.
 - `loader/engine.ts`: the `loader` engine over the vendored `@deno/loader`, reached only through
@@ -40,7 +41,9 @@ Deno's resolution and loading behind one interface
   parsing.
 - `contract.test.ts`: the contract every engine passes, on the `test/fixtures/engine-*` fixtures
   (the `deno` engine's run is skipped when `deno` is missing or older than 2.8.3; `engine-cli-*`
-  fixtures cover what only the `deno` engine supports, in `deno-cli/engine.test.ts`).
+  fixtures cover what only the `deno` engine supports, in `deno-cli/engine.test.ts`), including
+  lockfile pins (and `noLock` without a lockfile: `lockfile: 'off'`) and `cachedOnly` refusing
+  every download (npm, JSR, remote modules) with `CACHED_ONLY_MISS`.
 
 Measured on macOS arm64 with Deno 2.9.7, tests running under Node 26 (warm numbers are similar
 under Deno and Bun; cold ones depend on the network), `engine-basic` (77 modules):

@@ -13,9 +13,12 @@
  *
  * @module
  */
+import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { posix, win32 } from 'node:path'
+import type { SourceMapInput } from '@jridgewell/remapping'
+import remapping from '@jridgewell/remapping'
 import { isDenoType } from '../../core/attributes.js'
 import type { DenoType } from '../../core/id.js'
 import { isOwnedSpecifier, splitQuery, withDenoType } from '../../core/id.js'
@@ -63,7 +66,10 @@ export interface RouterHost {
   resolve(context: string, request: string): Promise<string | false>
   /** The request of the module the plugin synthesises for `id` (a marker or virtual id). */
   synthetic(id: string): Promise<string>
-  /** Adds `files` to the file dependencies of the resolution (`resolveData.fileDependencies`). */
+  /**
+   * Adds `files` to the dependencies of the resolution (`resolveData.fileDependencies`, or
+   * `missingDependencies` for those that do not exist).
+   */
   dependOn(files: readonly string[]): void
 }
 
@@ -483,6 +489,29 @@ export class ConfigReloader {
   }
 }
 
+/**
+ * The project's watched files (§5.7) as dependencies: those that exist are file dependencies,
+ * the others (a lockfile not created yet) missing dependencies, which hosts watch for creation.
+ * A file dependency that does not exist is reported as removed by some watchers (Bun's), which
+ * rebuilds and reloads the project for nothing.
+ */
+export class WatchedFiles {
+  #missing: ReadonlySet<string> = new Set()
+
+  /** Checks which of `files` exist (once per compilation). */
+  update(files: readonly string[]): { existing: string[]; missing: string[] } {
+    const existing = files.filter((file) => existsSync(file))
+    const missing = files.filter((file) => !existing.includes(file))
+    this.#missing = new Set(missing)
+    return { existing, missing }
+  }
+
+  /** Whether `file` was missing at the last {@link update}. */
+  isMissing(file: string): boolean {
+    return this.#missing.has(file)
+  }
+}
+
 /** The modification time of `path`, or `-1` when it does not exist. */
 async function modificationTime(path: string): Promise<number> {
   return stat(path).then(
@@ -508,6 +537,8 @@ export type LoadHook = (this: LoadHookContext, id: string) => Promise<LoadHookRe
 /** A `use` entry of a `module.rules` entry. */
 export interface LoaderUse {
   loader: string
+  /** Names the options in module identifiers (webpack's persistent cache); default: the rule path. */
+  ident?: string
   options: { plugin: { name: string; load: LoadHook } }
 }
 
@@ -520,14 +551,26 @@ const loadLoaders = new Map<string, string>()
  * loader calls `options.plugin.load(resource)` with a build context whose `addWatchFile` adds a
  * dependency of the module, and returns the result's code and source map.
  */
-export function loadLoader(host: 'webpack' | 'rspack', load: LoadHook): LoaderUse {
+export function loadLoader(host: 'webpack' | 'rspack', load: LoadHook, ident?: string): LoaderUse {
   let loader = loadLoaders.get(host)
   if (loader === undefined) {
     loader = requireFromHere.resolve(`unplugin/${host}/loaders/load`)
     loadLoaders.set(host, loader)
   }
-  return { loader, options: { plugin: { name: TAP_NAME, load } } }
+  const use: LoaderUse = { loader, options: { plugin: { name: TAP_NAME, load } } }
+  if (ident !== undefined) use.ident = ident
+  return use
 }
+
+/**
+ * A transform applied to mirror code after loading it (§5.10): the code and the edit's map, or
+ * `null` for no change. `watch` adds a dependency of the module.
+ */
+export type MirrorTransform = (
+  code: string,
+  id: string,
+  watch: (file: string) => void,
+) => Promise<{ code: string; map?: HostSourceMap | null | undefined } | null>
 
 /**
  * The `load` hook of mirror code files (§5.3): their code without the `sourceMappingURL` comment
@@ -535,16 +578,22 @@ export function loadLoader(host: 'webpack' | 'rspack', load: LoadHook): LoaderUs
  * mirror file (`…/https/jsr.io/@std/path/1.1.6/posix/join.ts`), as an absolute path because
  * webpack and Rspack do not resolve a loader's relative sources against the module (sources of
  * equal names would merge). Their own `extractSourceMap` would join the map's URL `sourceRoot`
- * as a path.
+ * as a path. `transform` (the source transforms, §5.10) edits the loaded code; its map is composed
+ * over the mirror's.
  */
-export function mirrorLoad(state: PluginState): LoadHook {
-  return async (id) => {
+export function mirrorLoad(state: PluginState, transform?: MirrorTransform): LoadHook {
+  return async function load(id) {
     const loaded = await state.load(id).catch((error: unknown) => {
       throw toHostError(error)
     })
     if (loaded === null) return null
-    const map = loaded.map
-    if (map === null || map === undefined) return { code: loaded.code, map: null }
+    const edited =
+      transform === undefined
+        ? null
+        : await transform(loaded.code, id, (file) => this.addWatchFile(file))
+    const code = edited?.code ?? loaded.code
+    const map = edited === null ? loaded.map : composeMaps(edited.map, loaded.map)
+    if (map === null || map === undefined) return { code, map: null }
     const syntax = state.flavor === 'win32' ? win32 : posix
     const dir = syntax.dirname(splitQuery(id).base)
     const sources = map.sources.map((source) =>
@@ -552,8 +601,22 @@ export function mirrorLoad(state: PluginState): LoadHook {
         ? source
         : syntax.join(dir, source),
     )
-    return { code: loaded.code, map: { ...map, sources } }
+    return { code, map: { ...map, sources } }
   }
+}
+
+/**
+ * Composes the map of an edit of a module (`edit`, whose single source is the module) over the
+ * module's own map (`base`): the result maps the edited code to `base`'s sources.
+ */
+export function composeMaps(
+  edit: HostSourceMap | null | undefined,
+  base: HostSourceMap | null | undefined,
+): HostSourceMap | null {
+  if (edit === null || edit === undefined) return base ?? null
+  if (base === null || base === undefined) return edit
+  const composed = remapping([edit as SourceMapInput, base as SourceMapInput], () => null)
+  return JSON.parse(composed.toString()) as HostSourceMap
 }
 
 /** The methods of a webpack or Rspack infrastructure logger the adapters use. */

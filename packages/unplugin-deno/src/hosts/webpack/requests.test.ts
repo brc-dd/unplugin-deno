@@ -10,6 +10,7 @@ import {
   applyOutcome,
   buildHttpMatcher,
   CompilationLog,
+  composeMaps,
   ConfigReloader,
   conditionNames,
   entryInput,
@@ -19,6 +20,7 @@ import {
   requestPath,
   Router,
   toHostError,
+  WatchedFiles,
 } from './requests.js'
 
 /** A plugin state that answers `resolve` from `outcomes` and records the calls. */
@@ -460,6 +462,95 @@ describe('mirrorLoad', () => {
     })
     expect(await load.call(context, '/other.js')).toBeNull()
   })
+
+  it('transforms the loaded code, composing the edit map over the mirror map', async () => {
+    // `export const main = import.meta.main` (column 20) mapped line for line to join.ts.
+    const code = 'export const main = import.meta.main\n'
+    const state = {
+      flavor: 'posix',
+      load: async () => ({
+        code,
+        map: {
+          version: 3,
+          sources: ['join.ts'],
+          sourcesContent: ['export const main: boolean = import.meta.main\n'],
+          names: [],
+          mappings: 'AAAA,aAAa,IAAI,GAAY',
+        },
+      }),
+    } as unknown as PluginState
+    const watched: string[] = []
+    const load = mirrorLoad(state, async (source, id, watch) => {
+      watch('/root/.env')
+      expect(id).toBe('/m/https/jsr.io/x/join.ts.js')
+      const edited = source.replace('import.meta.main', 'false')
+      return {
+        code: edited,
+        // `false` (column 20) is the original `import.meta.main`.
+        map: {
+          version: 3,
+          sources: [id],
+          names: [],
+          mappings: 'AAAA,oBAAoB,KAAgB',
+        },
+      }
+    })
+    const result = await load.call(
+      { addWatchFile: (file) => watched.push(file) },
+      '/m/https/jsr.io/x/join.ts.js',
+    )
+    expect(result?.code).toBe('export const main = false\n')
+    expect(result?.map?.sources).toEqual(['/m/https/jsr.io/x/join.ts'])
+    expect(result?.map?.sourcesContent).toEqual(['export const main: boolean = import.meta.main\n'])
+    expect(result?.map?.mappings).toMatch(/^AAAA/)
+    expect(watched).toEqual(['/root/.env'])
+    // No edit: the mirror's own code and map.
+    const unchanged = mirrorLoad(state, async () => null)
+    expect((await unchanged.call({ addWatchFile: () => {} }, '/m/x.js'))?.code).toBe(code)
+  })
+})
+
+describe('WatchedFiles', () => {
+  it('splits the watched files into existing and missing ones', async () => {
+    const dir = await tempDir({ 'deno.json': '{}' })
+    onTestFinished(() => dir.dispose())
+    const watched = new WatchedFiles()
+    const files = [dir.path('deno.json'), dir.path('deno.lock')]
+    expect(watched.update(files)).toEqual({
+      existing: [dir.path('deno.json')],
+      missing: [dir.path('deno.lock')],
+    })
+    expect(watched.isMissing(dir.path('deno.lock'))).toBe(true)
+    expect(watched.isMissing(dir.path('deno.json'))).toBe(false)
+    // A lockfile created later is a file dependency from the next compilation on.
+    await writeFile(dir.path('deno.lock'), '{ "version": "5" }')
+    expect(watched.update(files).missing).toEqual([])
+    expect(watched.isMissing(dir.path('deno.lock'))).toBe(false)
+  })
+})
+
+describe('composeMaps', () => {
+  it('maps an edit through the module map, and keeps either map alone', () => {
+    const base = {
+      version: 3 as const,
+      sources: ['a.ts'],
+      sourcesContent: ['const a: number = 1\n'],
+      names: [],
+      mappings: 'AAAA,MAAM,CAAC,GAAW',
+    }
+    const edit = {
+      version: 3 as const,
+      sources: ['a.js'],
+      names: [],
+      mappings: 'AAAA,MAAM,CAAC,GAAG',
+    }
+    const composed = composeMaps(edit, base)
+    expect(composed?.sources).toEqual(['a.ts'])
+    expect(composed?.sourcesContent).toEqual(['const a: number = 1\n'])
+    expect(composeMaps(null, base)).toBe(base)
+    expect(composeMaps(edit, null)).toBe(edit)
+    expect(composeMaps(undefined, undefined)).toBeNull()
+  })
 })
 
 /** A `load` hook that loads nothing. */
@@ -476,6 +567,10 @@ describe('loadLoader', () => {
         new RegExp(`unplugin/dist/${hostName}/loaders/load\\.mjs$`),
       )
       expect(use.options.plugin).toEqual({ name: 'unplugin-deno', load: loadNothing })
+      expect(use.ident).toBeUndefined()
+      expect(loadLoader(hostName, loadNothing, 'unplugin-deno-mirror-x').ident).toBe(
+        'unplugin-deno-mirror-x',
+      )
     }
   })
 })

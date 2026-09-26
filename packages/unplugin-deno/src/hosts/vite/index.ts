@@ -37,6 +37,7 @@ import type {
 } from 'vite'
 import type { HostInput } from '../../core/entries.js'
 import { matchPattern } from '../../core/platform.js'
+import { writeSidecar } from '../../core/sidecar.js'
 import { parseSpecifier } from '../../core/specifier.js'
 import type { PluginState } from '../../core/state.js'
 import { transformCodeFilter } from '../../core/state.js'
@@ -44,7 +45,13 @@ import { isWatchedFile } from '../../core/watch.js'
 import { realpathMaybeMissing } from '../../engine/npm-package.js'
 import { toDirUrl, toPath } from '../../utils/path.js'
 import type { HostLogTarget, HostResolve, TransformHostContext } from '../shared.js'
-import { esbuildJsxOptions, oxcJsxOptions, toRollupResult, transformContext } from '../shared.js'
+import {
+  esbuildJsxOptions,
+  oxcJsxOptions,
+  rollupEntryDirectory,
+  toRollupResult,
+  transformContext,
+} from '../shared.js'
 import {
   consumerOf,
   conditionsToAdd,
@@ -306,6 +313,19 @@ export function viteHooks(
       // Watch mode keeps the engines between rebuilds; a build, or a closing dev server, ends.
       if (environment?.mode === 'build' && this.meta.watchMode) await state.flush()
       else await state.close()
+    },
+
+    // The sidecar deno.json and deno.lock of a Deno server environment's output (S3).
+    async writeBundle(output, bundle) {
+      if (state.options.emitDenoConfig === false || !state.ready) return
+      const dir = rollupEntryDirectory(output, bundle)
+      if (dir === undefined) return
+      state.setLogTarget(this)
+      const environment: Environment | undefined = this.environment
+      await writeSidecar(state, dir, {
+        platform: environment === undefined ? undefined : targetOf(state, environment).platform,
+        dispose: !this.meta.watchMode,
+      })
     },
   }
   // The generic transform hook is removed too when nothing needs it (core/plugin.ts).

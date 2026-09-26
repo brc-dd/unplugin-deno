@@ -4,13 +4,15 @@
  * their first run and are served from it afterwards. The `deno` engine's run is skipped (with the
  * reason in its name) when the `deno` binary is missing or older than 2.8.3.
  */
-import { existsSync } from 'node:fs'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { existsSync, readdirSync } from 'node:fs'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { denoBinary } from '../../test/helpers/deno-binary.js'
-import { denoDir } from '../../test/helpers/deno-dir.js'
+import { denoDir, freshDenoDir } from '../../test/helpers/deno-dir.js'
 import { normalize } from '../../test/helpers/normalize.js'
 import { runtime } from '../../test/helpers/runtime.js'
+import { tempDir } from '../../test/helpers/temp-dir.js'
 import type { TempProject } from '../../test/helpers/temp-project.js'
 import { tempProject } from '../../test/helpers/temp-project.js'
 import type { ErrorCode } from '../diagnostics/errors.js'
@@ -681,6 +683,102 @@ function contract(factory: EngineFactory): void {
         })
         expect(normalize((await node.resolve('debug', main, 'import')).path ?? '')).toBe(
           cached(expected.node),
+        )
+      },
+    )
+  })
+
+  describe('lockfile and cachedOnly', () => {
+    it(
+      'honours the lockfile pins, and ignores them without a lockfile (`lockfile: off`)',
+      { timeout: 120_000 },
+      async () => {
+        // deno.lock pins npm:kleur@4 to 4.1.4; without it, ^4 resolves to 4.1.5.
+        await using dir = await tempDir({
+          'deno.json': { imports: { kleur: 'npm:kleur@^4' } },
+          'deno.lock': {
+            version: '5',
+            specifiers: { 'npm:kleur@4': '4.1.4' },
+            npm: {
+              'kleur@4.1.4': {
+                integrity:
+                  'sha512-8QADVssbrFjivHWQU7KkMgptGTl6WAcSdlbBPY4uNF+mWr6DGcKrvY2w4FQJoXch7+fKMjj0dRrL75vk3k23OA==',
+              },
+            },
+            workspace: { dependencies: ['npm:kleur@4'] },
+          },
+          'src/main.ts': "import kleur from 'kleur'\nexport const bold = kleur.bold\n",
+        })
+        const project: EngineProject = {
+          root: dir.root,
+          workspaceRoot: dir.root,
+          configPath: dir.path('deno.json'),
+          lockfilePath: dir.path('deno.lock'),
+          nodeModulesDir: 'none',
+        }
+        const lockText = await readFile(dir.path('deno.lock'), 'utf8')
+        const main = dir.url('src/main.ts')
+        {
+          await using locked = await createEngine(factory, project)
+          expect((await locked.resolve('kleur', main, 'import')).npm?.version).toBe('4.1.4')
+        }
+        {
+          await using unlocked = await createEngine(factory, {
+            ...project,
+            lockfilePath: undefined,
+          })
+          expect((await unlocked.resolve('kleur', main, 'import')).npm?.version).toBe('4.1.5')
+        }
+        // Neither engine writes the lockfile.
+        expect(await readFile(dir.path('deno.lock'), 'utf8')).toBe(lockText)
+      },
+    )
+
+    it(
+      'refuses every download with CACHED_ONLY_MISS: npm and JSR packages, remote modules',
+      { timeout: 120_000 },
+      async () => {
+        await using cache = await freshDenoDir()
+        await using temp = await tempProject('engine-basic')
+        vi.stubEnv('DENO_DIR', cache.path)
+        await using engine = await factory.create({
+          project: projectOf(temp, 'none'),
+          platform: 'browser',
+          conditions: [],
+          cachedOnly: true,
+          logger: createSilentLogger(),
+          denoBinary: denoBinary.binary,
+        })
+        const main = temp.url('src/main.ts')
+        const diagnostics = await engine.addEntrypoints([main])
+        expect(diagnostics.filter((diagnostic) => diagnostic.code === 'CACHED_ONLY_MISS')).toEqual([
+          {
+            code: 'CACHED_ONLY_MISS',
+            message: expect.stringContaining('`cachedOnly`'),
+          },
+        ])
+        // npm (locked and not), JSR (mapped and inline) and a remote module: the same code.
+        for (const specifier of [
+          'kleur',
+          'npm:esm-env@1.2.2',
+          '@std/path',
+          'jsr:@std/fmt@1.0.8/colors',
+        ]) {
+          const error = await rejection(engine.resolve(specifier, main, 'import'))
+          expectCode(error, 'CACHED_ONLY_MISS')
+          expect(error).toMatchObject({ hint: expect.stringContaining('`deno install`') })
+        }
+        expectCode(await rejection(engine.load(STD_COLORS, 'default')), 'CACHED_ONLY_MISS')
+        // Other failures keep their codes.
+        expectCode(
+          await rejection(engine.resolve('not-in-the-import-map', main, 'import')),
+          'RESOLVE_UNMAPPED_BARE',
+        )
+        // Nothing was downloaded.
+        const remote = join(cache.path, 'remote')
+        expect(existsSync(remote) ? readdirSync(remote, { recursive: true }) : []).toEqual([])
+        expect(existsSync(join(cache.path, 'npm', 'registry.npmjs.org', 'kleur', '4.1.5'))).toBe(
+          false,
         )
       },
     )

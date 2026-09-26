@@ -7,7 +7,10 @@
  * `platform` record entry, a `platform` string, or `deno` when the project has a `deno.json`
  * (else `node`), as Vite's server environments do. The environments share one plugin state
  * (project, engines per target, mirror), prepared once with Rsbuild's root and closed with the
- * build or the dev server.
+ * build or the dev server. The Rspack plugin also runs the source transforms, checks and Wasm
+ * modules for the environment's platform, and gives the `deno.json` JSX settings to the
+ * environment's `builtin:swc-loader` rules unless they configure JSX: it sees the final Rspack
+ * config, after `tools.swc` and plugins such as `@rsbuild/plugin-react` or `plugin-preact`.
  *
  * @module
  */

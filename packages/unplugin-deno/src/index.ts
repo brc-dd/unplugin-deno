@@ -13,6 +13,7 @@ import { unpluginFactory } from './core/plugin.js'
 export type {
   ChecksOptions,
   EnvOptions,
+  LockfileMode,
   Options,
   Pattern,
   Platform,

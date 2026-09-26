@@ -34,8 +34,11 @@ export const SWC_RULE: RuleSetRule = {
   },
 }
 
-/** Options of {@link buildWithRspack}: Rspack configuration merged over the helper's. */
-export type RspackBuildOptions = Configuration
+/**
+ * Options of {@link buildWithRspack}: Rspack configuration merged over the helper's, and the
+ * TypeScript rule to use instead of {@link SWC_RULE} (`false`: none).
+ */
+export type RspackBuildOptions = Configuration & { typescriptRule?: RuleSetRule | false }
 
 /**
  * The configuration of {@link buildWithRspack}: production mode without minification, source
@@ -52,7 +55,8 @@ export function rspackConfig(
   pluginOptions: Options = {},
   extra: RspackBuildOptions = {},
 ): Configuration {
-  const { output, module, plugins = [], optimization, ...rest } = extra
+  const { output, module, plugins = [], optimization, typescriptRule = SWC_RULE, ...rest } = extra
+  const typescript = typescriptRule === false ? [] : [typescriptRule]
   return {
     mode: 'production',
     context: fixtureDir,
@@ -69,7 +73,7 @@ export function rspackConfig(
       ...output,
     },
     optimization: { minimize: false, ...optimization },
-    module: { ...module, rules: [SWC_RULE, ...(module?.rules ?? [])] },
+    module: { ...module, rules: [...typescript, ...(module?.rules ?? [])] },
     plugins: [denoRspack(pluginOptions), ...plugins],
     infrastructureLogging: { level: 'info', console: captureConsole(logs) },
   }

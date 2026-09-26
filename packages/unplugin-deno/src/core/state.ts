@@ -7,6 +7,7 @@
  * @module
  */
 import { readFile } from 'node:fs/promises'
+import { relative } from 'node:path'
 import { MagicString } from 'magic-string'
 import type { UnpluginContextMeta } from 'unplugin'
 import type { Project } from '../config/project.js'
@@ -21,8 +22,15 @@ import type { EncodedSourceMap, Engine } from '../engine/types.js'
 import type { HostContext, HostLogTarget } from '../hosts/shared.js'
 import { createHostLogger } from '../hosts/shared.js'
 import type { PathFlavor } from '../utils/path.js'
-import { HOST_PATH_FLAVOR, toFileUrl } from '../utils/path.js'
+import { HOST_PATH_FLAVOR, toFileUrl, toPath } from '../utils/path.js'
 import { vendoredLoaderVersion } from '../vendored-deno-loader.js'
+import type { ImportAllowList } from './allow-import.js'
+import {
+  createImportAllowList,
+  DEFAULT_JSR_REGISTRY,
+  jsrRegistryUrl,
+  projectRemoteUrls,
+} from './allow-import.js'
 import type { AstParser, MarkerModule } from './attributes.js'
 import { applyImportAttributes, synthesizeMarkerModule } from './attributes.js'
 import {
@@ -47,6 +55,9 @@ import {
   readDenoType,
   splitQuery,
 } from './id.js'
+import type { JsrRoute, JsrRouteDecision } from './jsr-npm.js'
+import { jsrRouteFor } from './jsr-npm.js'
+import { LockfilePolicy, lockfileModeFor } from './lockfile-policy.js'
 import type { Mirror } from './mirror.js'
 import { createMirror, hostMirrorMap, mirrorGeneration } from './mirror.js'
 import type { JsxDecision } from './jsx.js'
@@ -66,6 +77,8 @@ import type {
   ResolveTarget,
 } from './resolve.js'
 import { BROAD_RESOLVE_ID_FILTER, createResolver, resolveIdFilter } from './resolve.js'
+import type { ExternalRecord } from './sidecar.js'
+import { ExternalRecorder } from './sidecar.js'
 import type { DenoReference } from './source.js'
 import { applySourceTransforms, scanSource } from './source.js'
 import { isWasmModuleId, synthesizeWasmModule, WASM_MODULE_ID_FILTER } from './wasm.js'
@@ -100,6 +113,12 @@ interface Configuration {
   mirror: Mirror
   denoDirs: string[]
   filter: RegExp
+  /** The remote-import allow-list (R15). */
+  allowImport: ImportAllowList
+  /** How `deno.lock` is used (R5, X5). */
+  lockfilePolicy: LockfilePolicy
+  /** Where `jsr:` packages come from (R11). */
+  jsrRoute: JsrRouteDecision
   /** Resolvers of other {@link ResolveTarget}s, keyed by target. */
   targets: Map<string, Resolver>
   /** Mirrors of other generations (targets with another platform or conditions). */
@@ -199,6 +218,8 @@ export class PluginState implements ResolverState, InvalidationTarget {
   readonly #warned = new Set<string>()
   /** npm packages bundled in this build, per platform (X4). */
   readonly #packages = new PackageVersions()
+  /** Imports kept external, per platform (the sidecar deno.lock, S3). */
+  readonly #externals = new ExternalRecorder()
 
   /**
    * @throws {DenoPluginError} `OPTIONS_INVALID` for invalid options (checked at plugin creation).
@@ -284,14 +305,26 @@ export class PluginState implements ResolverState, InvalidationTarget {
     const cacheDir = this.options.cacheDir ?? defaultCacheDir(project.workspaceRoot)
     const projectGeneration = await configGeneration(project)
     const generation = mirrorGeneration(projectGeneration, PLUGIN_VERSION, platform, conditions)
-    const mirror = createMirror({
-      cacheDir,
-      generation,
-      engine: () => this.engine(),
-      rawEngine: () => this.engine('raw'),
-      lockfile: project.lockfile,
-      logger: this.logger,
+    const denoDirs = denoDirVariants(resolveDenoDir())
+    const jsrRegistries = [...new Set([DEFAULT_JSR_REGISTRY, jsrRegistryUrl()])]
+    const allowImport = createImportAllowList({
+      allowImport: this.options.allowImport,
+      projectUrls: projectRemoteUrls(project),
+      jsrRegistries,
     })
+    const lockfilePolicy = new LockfilePolicy({
+      decision: lockfileModeFor(this.options.lockfile, project, process.env),
+      project,
+      explain: this.options.checks.lockfile,
+      logger: this.logger,
+      jsrRegistries,
+      denoDirs,
+    })
+    const jsrRoute = jsrRouteFor(project, npmStrategy)
+    const mirror = this.#createMirror(
+      { cacheDir, project, allowImport, lockfilePolicy, jsrRoute: jsrRoute.route },
+      generation,
+    )
     this.#configuration = {
       project,
       platform,
@@ -301,8 +334,11 @@ export class PluginState implements ResolverState, InvalidationTarget {
       configGeneration: projectGeneration,
       generation,
       mirror,
-      denoDirs: denoDirVariants(resolveDenoDir()),
+      denoDirs,
       filter: resolveIdFilter(project, this.options, platform),
+      allowImport,
+      lockfilePolicy,
+      jsrRoute,
       targets: new Map(),
       mirrors: new Map(),
     }
@@ -320,6 +356,31 @@ export class PluginState implements ResolverState, InvalidationTarget {
       throw new Error('unplugin-deno: the project is not loaded yet (buildStart has not run).')
     }
     return this.#configuration
+  }
+
+  /**
+   * The mirror of `generation`, checking remote imports against the allow-list and the lockfile;
+   * its engines are those of `target` (the build's when omitted).
+   */
+  #createMirror(
+    parts: Pick<Configuration, 'cacheDir' | 'project' | 'allowImport' | 'lockfilePolicy'> & {
+      jsrRoute: JsrRoute
+    },
+    generation: string,
+    target?: EngineTarget,
+  ): Mirror {
+    const { allowImport, lockfilePolicy } = parts
+    return createMirror({
+      cacheDir: parts.cacheDir,
+      generation,
+      engine: () => this.engine('main', target),
+      rawEngine: () => this.engine('raw', target),
+      lockfile: parts.project.lockfile,
+      logger: this.logger,
+      checkRemote: (url, context) => allowImport.check(url, context),
+      checkLockfile: (check, importer) => lockfilePolicy.check(check, importer),
+      keepJsrSpecifiers: parts.jsrRoute === 'node_modules',
+    })
   }
 
   get project(): Project {
@@ -354,9 +415,53 @@ export class PluginState implements ResolverState, InvalidationTarget {
     return this.#configured().generation
   }
 
+  /** The remote-import allow-list (R15). */
+  get allowImport(): ImportAllowList {
+    return this.#configured().allowImport
+  }
+
+  /** How `deno.lock` is used (R5, X5). */
+  get lockfilePolicy(): LockfilePolicy {
+    return this.#configured().lockfilePolicy
+  }
+
+  /** Where `jsr:` packages come from (R11). */
+  get jsrRoute(): JsrRoute {
+    return this.#configured().jsrRoute.route
+  }
+
+  /** The JSR registries: `https://jsr.io/` (the loader's) and `JSR_URL` (the Deno CLI's). */
+  get jsrRegistries(): readonly string[] {
+    return [...new Set([DEFAULT_JSR_REGISTRY, jsrRegistryUrl()])]
+  }
+
   /** Whether the project is loaded (after `prepare`). */
   get ready(): boolean {
     return this.#configuration !== undefined
+  }
+
+  /** Records an import kept external for `platform` (the sidecar deno.lock, S3). */
+  recordExternal(platform: Platform, record: ExternalRecord): void {
+    this.#externals.record(platform, record)
+  }
+
+  /** The imports kept external for `platform` so far (every build of this instance). */
+  externals(platform: Platform): ExternalRecord[] {
+    return this.#externals.list(platform)
+  }
+
+  /**
+   * The command that downloads what the build needs into Deno's cache, for `cachedOnly` hints:
+   * `deno cache <entries>` with the build's module inputs relative to `cwd`, or `deno install`.
+   */
+  cacheCommand(): string {
+    const root = this.#configuration?.project.root ?? this.options.cwd
+    const entries = normalizeEntries(this.#hints.input, root).map((entry) => {
+      if (!entry.startsWith('file:')) return entry
+      const path = relative(this.options.cwd, toPath(entry, this.flavor))
+      return path.replaceAll('\\', '/')
+    })
+    return entries.length === 0 ? 'deno install' : `deno cache ${entries.join(' ')}`
   }
 
   // -- diagnostics ------------------------------------------------------------------------------
@@ -461,6 +566,7 @@ export class PluginState implements ResolverState, InvalidationTarget {
             ? {}
             : { newestDependencyDate: project.minimumDependencyAge.newestDependencyDate }),
           logger: this.logger,
+          ...(this.options.fetch === undefined ? {} : { fetch: this.options.fetch }),
           denoBinary: this.options.denoBinary,
         }),
       )
@@ -587,6 +693,11 @@ export class PluginState implements ResolverState, InvalidationTarget {
         warnOnce: (warning, message) => this.warnOnce(warning, message),
         recordNpmPackage: (packagePlatform, name, version) =>
           this.recordNpmPackage(packagePlatform, name, version),
+        allowImport: configuration.allowImport,
+        lockfilePolicy: configuration.lockfilePolicy,
+        jsrRoute: configuration.jsrRoute.route,
+        recordExternal: (externalPlatform, record) => this.recordExternal(externalPlatform, record),
+        cacheCommand: () => this.cacheCommand(),
       })
       configuration.targets.set(key, resolver)
     }
@@ -604,14 +715,11 @@ export class PluginState implements ResolverState, InvalidationTarget {
     if (generation === configuration.generation) return configuration.mirror
     let mirror = configuration.mirrors.get(generation)
     if (mirror === undefined) {
-      mirror = createMirror({
-        cacheDir: configuration.cacheDir,
+      mirror = this.#createMirror(
+        { ...configuration, jsrRoute: configuration.jsrRoute.route },
         generation,
-        engine: () => this.engine('main', target),
-        rawEngine: () => this.engine('raw', target),
-        lockfile: configuration.project.lockfile,
-        logger: this.logger,
-      })
+        target,
+      )
       configuration.mirrors.set(generation, mirror)
     }
     return mirror
@@ -789,9 +897,11 @@ export class PluginState implements ResolverState, InvalidationTarget {
     const lines = [
       `unplugin-deno ${PLUGIN_VERSION} on ${host}, engine ${engine}`,
       `config ${project.configPath ?? 'none'}, workspace root ${project.workspaceRoot} (${project.members.length} member(s), ${project.links.length} link(s))`,
-      `lockfile ${project.lockfile === null ? 'none' : project.lockfile.path}`,
+      configuration.lockfilePolicy.describe(),
       `nodeModulesDir ${project.nodeModules.mode} (layout ${project.nodeModules.layout ?? 'none'}), npm ${configuration.npmStrategy}`,
+      `jsr: packages ${configuration.jsrRoute.route === 'node_modules' ? 'from node_modules/@jsr (npm:@jsr/<scope>__<name>)' : 'mirrored from the JSR registry'} (${configuration.jsrRoute.reason})`,
       `platform ${configuration.platform}, conditions [${configuration.conditions.join(', ')}]`,
+      configuration.allowImport.describe(),
       `cacheDir ${configuration.cacheDir}, generation ${configuration.generation}`,
     ]
     for (const line of lines) this.logger.debug(`[core] ${line}`)

@@ -1,0 +1,6 @@
+{
+  "imports": {
+    "@mock/pkg": "jsr:@mock/pkg@^1",
+    "mock-pkg": "npm:mock-pkg@^1"
+  }
+}

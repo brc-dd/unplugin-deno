@@ -15,7 +15,8 @@ import { isOptionalDependencyError } from '../engine/errors.js'
 import type { Engine, ResolutionMode, ResolvedModule } from '../engine/types.js'
 import type { PathFlavor } from '../utils/path.js'
 import { HOST_PATH_FLAVOR, toFileUrl, toPath } from '../utils/path.js'
-import { displayModule, nativeAddonMessage, nodeBuiltinMessage } from './checks.js'
+import type { ImportAllowList } from './allow-import.js'
+import { cachedOnlyHint, displayModule, nativeAddonMessage, nodeBuiltinMessage } from './checks.js'
 import type { DenoType } from './id.js'
 import {
   EMPTY_MODULE_ID,
@@ -26,6 +27,9 @@ import {
   splitQuery,
   withDenoType,
 } from './id.js'
+import type { JsrRoute } from './jsr-npm.js'
+import { jsrToNpmSpecifier } from './jsr-npm.js'
+import type { LockfilePolicy } from './lockfile-policy.js'
 import type { Mirror } from './mirror.js'
 import type { NpmRedirectOutcome, NpmStrategy, PathOutcome } from './npm.js'
 import { isGlobalCachePath, isNodeModulesPath, npmOutcome, npmStrategyFor } from './npm.js'
@@ -33,6 +37,7 @@ import type { Pattern, Platform, ResolvedOptions, ResolveHookContext } from './o
 import { pinExternalsFor } from './options.js'
 import type { ExternalOutcome } from './platform.js'
 import { externalOutcomeFor, isExternal, matchPattern } from './platform.js'
+import type { ExternalRecord } from './sidecar.js'
 import type { ParsedSpecifier } from './specifier.js'
 import { parseNpmSpecifier, parseSpecifier } from './specifier.js'
 
@@ -134,6 +139,16 @@ export interface ResolverState {
   warnOnce?(key: string, message: string): void
   /** Records an npm package bundled for `platform` (the duplicate-version check, X4). */
   recordNpmPackage?(platform: Platform, name: string, version: string): void
+  /** The remote-import allow-list (R15); every host is allowed without one. */
+  readonly allowImport?: ImportAllowList
+  /** Compares resolutions with `deno.lock` (R5, X5); nothing is checked without one. */
+  readonly lockfilePolicy?: LockfilePolicy
+  /** Where `jsr:` packages come from (R11); `mirror` when unset. */
+  readonly jsrRoute?: JsrRoute
+  /** Records an import kept external for `platform` (the sidecar deno.lock, S3). */
+  recordExternal?(platform: Platform, record: ExternalRecord): void
+  /** The command that fills Deno's cache for the build (`deno cache src/main.ts`), for hints. */
+  cacheCommand?(): string
 }
 
 /** Resolves owned ids; see {@link createResolver}. */
@@ -250,7 +265,7 @@ async function resolveOwned(
   try {
     return await resolveSpecifier(step, id)
   } catch (error) {
-    throw withImporter(error, id, importer)
+    throw withCachedOnlyHint(state, withImporter(error, id, importer))
   }
 }
 
@@ -311,23 +326,56 @@ async function resolveSpecifier(step: Step, id: string): Promise<ResolveOutcome>
     const pin =
       (spec.kind === 'npm' || spec.kind === 'jsr') && pinExternalsFor(state.options, state.platform)
     const resolved = pin ? await engineResolve(step, base) : undefined
-    return externalOutcomeFor(
-      { ...spec, base },
-      resolved === 'optional' ? undefined : resolved,
-      state.options,
-      state.platform,
-      state.project.lockfile,
-      spellings,
+    return recordExternal(
+      state,
+      externalOutcomeFor(
+        { ...spec, base },
+        resolved === 'optional' ? undefined : resolved,
+        state.options,
+        state.platform,
+        state.project.lockfile,
+        spellings,
+      ),
+      resolved,
     )
   }
 
-  // 3. The engine.
+  // 3. The engine: remote URLs only from allowed hosts (R15), before anything is downloaded;
+  //    `jsr:` packages through node_modules/@jsr when the project installs them there (R11).
+  if (spec.kind === 'https' || spec.kind === 'http') {
+    state.allowImport?.check(base, { importer: step.importer })
+  }
+  if (spec.kind === 'jsr' && state.jsrRoute === 'node_modules') {
+    const npmSpecifier = jsrToNpmSpecifier(base)
+    if (npmSpecifier !== undefined) {
+      state.logger.debug(`[resolve] ${base} → ${npmSpecifier} (node_modules/@jsr)`)
+      return outcomeOf(step, await engineResolve(step, npmSpecifier), npmSpecifier, query)
+    }
+  }
   return outcomeOf(
     step,
     await engineResolve(step, base, markerFallback(spec, base, step)),
     base,
     query,
   )
+}
+
+/**
+ * Records an external outcome for the sidecar lockfile (S3), with the engine's resolution when
+ * the specifier was pinned; returns the outcome.
+ */
+function recordExternal(
+  state: ResolverState,
+  outcome: ExternalOutcome | null,
+  resolved: ResolvedModule | 'optional' | undefined,
+): ExternalOutcome | null {
+  if (outcome !== null) {
+    state.recordExternal?.(state.platform, {
+      id: outcome.id,
+      resolved: resolved === 'optional' ? undefined : resolved,
+    })
+  }
+  return outcome
 }
 
 /**
@@ -367,15 +415,19 @@ async function packageJsonDependency(
     return hostMarker(`${base}${query}`, step.denoType)
   }
   const resolved = pinExternalsFor(state.options, state.platform)
-    ? await engineResolve(step, base)
+    ? await engineResolve(step, base, undefined, match.mapped)
     : undefined
-  return externalOutcomeFor(
-    spec,
-    resolved === 'optional' ? undefined : resolved,
-    state.options,
-    state.platform,
-    state.project.lockfile,
-    [base],
+  return recordExternal(
+    state,
+    externalOutcomeFor(
+      spec,
+      resolved === 'optional' ? undefined : resolved,
+      state.options,
+      state.platform,
+      state.project.lockfile,
+      [base],
+    ),
+    resolved,
   )
 }
 
@@ -481,6 +533,14 @@ async function outcomeOf(
     }
     case 'remote':
     case 'data': {
+      // The engine may know a redirect of the URL (or map `jsr:` to a registry URL).
+      if (resolved.kind === 'remote') {
+        state.allowImport?.check(resolved.url, {
+          importer: step.importer,
+          redirectedFrom:
+            /^https?:/.test(specifier) && specifier !== resolved.url ? specifier : undefined,
+        })
+      }
       const file = await state.mirror.ensureMirrored(
         resolved.url,
         denoType === undefined ? 'module' : 'asset',
@@ -497,25 +557,55 @@ async function outcomeOf(
 /**
  * Resolves through the engine; a missing optional dependency of an npm package becomes
  * `'optional'` (kept external, so a guarded `require` fails at runtime as it would under Deno).
+ * The result is compared with `deno.lock` (`requirement`: the `npm:`/`jsr:` requirement that
+ * `specifier` stands for, when it is a bare `package.json` dependency), and failures of
+ * requirements the lockfile lacks are explained (R5, X5).
  */
 async function engineResolve(
   step: Step,
   specifier: string,
   fallback?: ResolvedModule,
+  requirement: string = specifier,
 ): Promise<ResolvedModule | 'optional'> {
-  const engine = await step.state.engine()
+  const { state } = step
+  const engine = await state.engine()
+  let resolved: ResolvedModule
   try {
-    return await engine.resolve(specifier, step.referrer, step.mode)
+    resolved = await engine.resolve(specifier, step.referrer, step.mode)
   } catch (error) {
     if (isOptionalDependencyError(error)) {
-      step.state.logger.debug(
+      state.logger.debug(
         `[resolve] optional dependency ${specifier} is not installed; kept external`,
       )
       return 'optional'
     }
     if (fallback !== undefined && isDenoPluginError(error)) return fallback
-    throw withInstallHint(step.state, specifier, error)
+    const explained = state.lockfilePolicy?.explainFailure(error, requirement) ?? error
+    throw withInstallHint(state, specifier, explained)
   }
+  // Deno locks code and JSON imports of remote URLs, not `text`/`bytes`/`css` ones.
+  if (step.denoType === undefined || resolved.kind !== 'remote') {
+    state.lockfilePolicy?.check(
+      { specifier: requirement, resolved, transitive: step.context.kind === 'npm-engine' },
+      step.importer,
+    )
+  }
+  return resolved
+}
+
+/**
+ * The hint of a `CACHED_ONLY_MISS`: the import that missed the cache and the command that fills
+ * it for this build (R13).
+ */
+function withCachedOnlyHint(state: ResolverState, error: unknown): unknown {
+  if (!isDenoPluginError(error) || error.code !== 'CACHED_ONLY_MISS') return error
+  const command = state.cacheCommand?.() ?? 'deno install'
+  return new DenoPluginError(error.code, error.message, {
+    hint: cachedOnlyHint(error.specifier, command),
+    specifier: error.specifier,
+    importer: error.importer,
+    cause: error.cause ?? error,
+  })
 }
 
 /**

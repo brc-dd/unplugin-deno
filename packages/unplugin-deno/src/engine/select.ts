@@ -13,6 +13,8 @@
  *   member"), so every build fails with `CONFIG_INVALID`.
  * - `jsrDepsInNodeModules` (Deno 2.9): Deno maps `jsr:` import-map entries to `npm:@jsr/…`
  *   packages installed in `node_modules`; the loader resolves them to `https://jsr.io`.
+ * - `JSR_URL` naming another registry: the loader ignores it and fetches JSR packages from
+ *   `https://jsr.io` (verified with a local registry); the Deno CLI honours it.
  *
  * Not deciding: glob workspace members (the loader handles them), `nodeModulesLinker: "hoisted"`
  * (Deno requires `nodeModulesDir: "manual"` with it, where no engine installs), CSS, text and
@@ -51,7 +53,7 @@ export interface EngineSelectionProject {
 
 /** A Deno feature the vendored loader lacks, found in the project. */
 export interface DenoOnlyFeature {
-  feature: 'catalog' | 'link-globs' | 'jsr-deps-in-node-modules'
+  feature: 'catalog' | 'link-globs' | 'jsr-deps-in-node-modules' | 'jsr-url'
   /** What was found, for messages (`catalog: in package.json dependencies of …`). */
   description: string
   /** The config file it is in. */
@@ -59,10 +61,13 @@ export interface DenoOnlyFeature {
 }
 
 /**
- * The Deno features of `project` that the vendored loader lacks (see the module comment), in
- * discovery order, at most one per feature and file.
+ * The Deno features of `project` (and of the environment `env`: `JSR_URL`) that the vendored
+ * loader lacks (see the module comment), in discovery order, at most one per feature and file.
  */
-export function denoOnlyFeatures(project: EngineSelectionProject): DenoOnlyFeature[] {
+export function denoOnlyFeatures(
+  project: EngineSelectionProject,
+  env: Readonly<Record<string, string | undefined>> = {},
+): DenoOnlyFeature[] {
   const found: DenoOnlyFeature[] = []
   const add = (feature: DenoOnlyFeature): void => {
     if (!found.some((item) => item.feature === feature.feature && item.file === feature.file)) {
@@ -108,6 +113,10 @@ export function denoOnlyFeatures(project: EngineSelectionProject): DenoOnlyFeatu
       description: '`jsrDepsInNodeModules`',
       file: root?.path,
     })
+  }
+  const jsrUrl = env.JSR_URL
+  if (jsrUrl !== undefined && jsrUrl !== '' && !/^https:\/\/jsr\.io\/?$/.test(jsrUrl)) {
+    add({ feature: 'jsr-url', description: `\`JSR_URL=${jsrUrl}\``, file: undefined })
   }
   return found
 }
@@ -155,7 +164,8 @@ export async function selectEngineKind(input: EngineSelectionInput): Promise<Eng
   if (input.engine === 'deno') {
     return { kind: 'deno', reason: "`engine: 'deno'`", features: [] }
   }
-  const features = input.project === null ? [] : denoOnlyFeatures(input.project)
+  const features =
+    input.project === null ? [] : denoOnlyFeatures(input.project, input.env ?? process.env)
   if (features.length === 0) {
     return {
       kind: 'loader',

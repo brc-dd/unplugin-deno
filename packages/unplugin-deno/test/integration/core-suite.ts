@@ -5,12 +5,13 @@
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { stripVTControlCharacters } from 'node:util'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { Options } from '../../src/core/options.js'
+import { DEFAULT_ALLOW_IMPORT } from '../../src/core/options.js'
 import type { BuildEntries, BuildResult } from '../helpers/build.js'
 import {
   buildWithRolldown,
@@ -19,8 +20,9 @@ import {
   installCssStyleSheet,
 } from '../helpers/build.js'
 import { denoBinary } from '../helpers/deno-binary.js'
-import { testDenoDirPath } from '../helpers/deno-dir.js'
+import { freshDenoDir, TEST_DENO_DIR_ENV, testDenoDirPath } from '../helpers/deno-dir.js'
 import type { HostName } from '../helpers/fixture.js'
+import { startMockRegistry } from '../helpers/mock-registry.js'
 import type { TempProject } from '../helpers/temp-project.js'
 import { tempProject } from '../helpers/temp-project.js'
 
@@ -34,6 +36,8 @@ export const SKIPPED: Readonly<Record<SuiteHost, Readonly<Record<string, string>
     'core-npm-node-modules':
       'Rollup needs @rollup/plugin-commonjs for the CommonJS package (ms) and @rollup/plugin-node-resolve for redirects',
     'core-npm-global-cache': 'Rollup needs @rollup/plugin-commonjs for the CommonJS package (ms)',
+    'core-jsr-node-modules':
+      'Rollup needs @rollup/plugin-node-resolve for the imports inside the @jsr/* packages',
   },
 }
 
@@ -95,7 +99,9 @@ export function nodeExternalPlugin(): object {
  * directory (`../../tmp/x`, as Rolldown's region comments in Vite do) does not count.
  */
 export function containsAbsolutePath(text: string, path: string): boolean {
-  const haystack = slashAll(text)
+  // Rolldown's `//#region <path>` comments are relative to its cwd, which is impossible across
+  // Windows drives (CI checks out on D: and creates temp projects on C:); they are not ours.
+  const haystack = slashAll(text.replace(/^\/\/#(?:end)?region .*$/gm, ''))
   const needle = slashAll(path)
   for (let index = haystack.indexOf(needle); index !== -1;) {
     if (haystack.slice(Math.max(0, index - 2), index) !== '..') return true
@@ -117,6 +123,69 @@ export function warningsWith(out: { logs: Array<{ message: string }> }, part: st
 /** The number of `import.meta.main` expressions in `code`. */
 export function importMetaMainCount(code: string): number {
   return code.match(/import\.meta\.main/g)?.length ?? 0
+}
+
+/**
+ * The messages, hints and codes of a build error, of its causes and of the errors it aggregates
+ * (hosts wrap plugin errors differently), one per line.
+ */
+export function errorText(error: unknown): string {
+  const seen = new Set<unknown>()
+  const parts: string[] = []
+  const walk = (value: unknown): void => {
+    if (typeof value !== 'object' || value === null || seen.has(value)) return
+    seen.add(value)
+    const record = value as Record<string, unknown>
+    for (const key of ['message', 'hint', 'code', 'pluginCode', 'text']) {
+      const field = record[key]
+      if (typeof field === 'string') parts.push(field)
+    }
+    walk(record.cause)
+    walk(record.detail)
+    if (Array.isArray(record.errors)) for (const item of record.errors) walk(item)
+    if (Array.isArray(record.notes)) for (const item of record.notes) walk(item)
+  }
+  walk(error)
+  return parts.join('\n')
+}
+
+/** The {@link errorText} of the error a build fails with. */
+export async function buildError(pending: Promise<unknown>): Promise<string> {
+  try {
+    await pending
+  } catch (error) {
+    return errorText(error)
+  }
+  throw new Error('expected the build to fail')
+}
+
+/** Whether `a` and `b` are the same JSON document. */
+function sameJson(a: string, b: string): boolean {
+  return JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b))
+}
+
+/**
+ * Runs the Deno platform output in `outDir` like Deno Deploy: `deno cache` (in a fresh
+ * `DENO_DIR`, which must leave the sidecar deno.lock unchanged), then
+ * `deno run --frozen --cached-only`. Returns the values the entry exports.
+ */
+export async function runWithSidecar(outDir: string, entry = 'server.js'): Promise<unknown> {
+  await writeFile(
+    join(outDir, 'run.mjs'),
+    `import { values } from './${entry}'\nconsole.log(JSON.stringify(values))\n`,
+  )
+  const cache = await freshDenoDir()
+  onTestFinished(() => cache.dispose())
+  const env = { ...process.env, DENO_DIR: cache.path, NO_COLOR: '1' }
+  const lock = await readFile(join(outDir, 'deno.lock'), 'utf8')
+  await execFileAsync('deno', ['cache', '--quiet', 'run.mjs'], { cwd: outDir, env })
+  expect(sameJson(await readFile(join(outDir, 'deno.lock'), 'utf8'), lock)).toBe(true)
+  const { stdout } = await execFileAsync(
+    'deno',
+    ['run', '-A', '--frozen', '--cached-only', 'run.mjs'],
+    { cwd: outDir, env },
+  )
+  return JSON.parse(stdout) as unknown
 }
 
 /** A temporary copy of a fixture, removed after the test. */
@@ -531,6 +600,64 @@ export function coreSuite(host: SuiteHost): void {
     )
 
     it(
+      'writes a sidecar deno.json and deno.lock of the externals next to the entry (emitDenoConfig)',
+      timeout,
+      async () => {
+        const project = await fixture('core-platform-deno')
+        const out = await build(host, project.root, entries, {
+          platform: 'deno',
+          emitDenoConfig: true,
+        })
+        expect(JSON.parse(await readFile(join(out.outDir, 'deno.json'), 'utf8'))).toEqual({
+          lock: './deno.lock',
+          nodeModulesDir: 'none',
+        })
+        const lock = JSON.parse(await readFile(join(out.outDir, 'deno.lock'), 'utf8')) as {
+          specifiers: Record<string, string>
+          jsr: Record<string, unknown>
+          npm: Record<string, unknown>
+          remote?: unknown
+        }
+        expect(Object.keys(lock.jsr)).toEqual(['@std/internal@1.0.14', '@std/path@1.1.6'])
+        expect(Object.keys(lock.npm)).toEqual(['kleur@4.1.5'])
+        expect(lock.specifiers).toMatchObject({
+          'jsr:@std/path@1.1.6': '1.1.6',
+          'npm:kleur@4.1.5': '4.1.5',
+        })
+        // The https: module is bundled: no remote entries.
+        expect(lock.remote).toBeUndefined()
+        // Other platforms write nothing.
+        const browser = await build(host, project.root, ['src/answer.ts'], {
+          platform: 'browser',
+          emitDenoConfig: true,
+        })
+        expect(existsSync(join(browser.outDir, 'deno.json'))).toBe(false)
+      },
+    )
+
+    it.skipIf(!DENO_AVAILABLE)(
+      'runs with the sidecar under `deno run --frozen --cached-only`, with and without a project lockfile (skipped without a deno binary)',
+      timeout,
+      async () => {
+        const project = await fixture('core-platform-deno')
+        const out = await build(host, project.root, entries, {
+          platform: 'deno',
+          emitDenoConfig: true,
+        })
+        expect(await runWithSidecar(out.outDir)).toEqual(expectedValues(project))
+        // Without deno.lock the sidecar comes from Deno's cache and the engine's resolutions.
+        const unlocked = await fixture('core-platform-deno')
+        await rm(unlocked.path('deno.lock'))
+        const fromCache = await build(host, unlocked.root, entries, {
+          platform: 'deno',
+          emitDenoConfig: true,
+        })
+        expect(warningsWith(fromCache, 'sidecar deno.lock')).toEqual([])
+        expect(await runWithSidecar(fromCache.outDir)).toEqual(expectedValues(project))
+      },
+    )
+
+    it(
       'bundles what `bundle` names and keeps ranges with pinExternals: false',
       timeout,
       async () => {
@@ -840,5 +967,272 @@ export function coreSuite(host: SuiteHost): void {
       expect(values).toEqual(expectedValues(project))
       expect(seen.toSorted()).toEqual(['virtual:answer', 'virtual:greeting'])
     })
+  })
+
+  describe.runIf(runs('core-lockfile-frozen'))(`core-lockfile-frozen (${host})`, () => {
+    it(
+      "fails on drift from deno.lock when frozen (also 'auto' with CI set), builds in auto mode",
+      timeout,
+      async () => {
+        vi.stubEnv('CI', '')
+        const project = await fixture('core-lockfile-frozen')
+        const expected = project.manifest.expect as { drift: string; bundled: string }
+        const lockText = await readFile(project.path('deno.lock'), 'utf8')
+        const frozen = await buildError(
+          build(host, project.root, project.manifest.entries, {
+            platform: 'browser',
+            lockfile: 'frozen',
+          }),
+        )
+        expect(frozen).toContain(expected.drift)
+        expect(frozen).toContain('Run `deno install` to update deno.lock')
+        const auto = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          debug: true,
+        })
+        expect((await evaluateModule<{ values: unknown }>(auto.entry)).values).toEqual(
+          expectedValues(project),
+        )
+        expect(
+          slashed(entryChunk(auto).moduleIds).some((id) => id.includes(expected.bundled)),
+        ).toBe(true)
+        expect(auto.logs.some((log) => log.message.includes('(NOT_IN_LOCKFILE); allowed by'))).toBe(
+          true,
+        )
+        vi.stubEnv('CI', 'true')
+        expect(
+          await buildError(
+            build(host, project.root, project.manifest.entries, { platform: 'browser' }),
+          ),
+        ).toContain(expected.drift)
+        // `lockfile: 'off'` ignores it; the plugin never writes it.
+        const off = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+          lockfile: 'off',
+        })
+        expect((await evaluateModule<{ values: unknown }>(off.entry)).values).toEqual(
+          expectedValues(project),
+        )
+        expect(await readFile(project.path('deno.lock'), 'utf8')).toBe(lockText)
+      },
+    )
+  })
+
+  describe.runIf(runs('core-allow-import'))(`core-allow-import (${host})`, () => {
+    it(
+      'allows the hosts deno.json and deno.lock name, refuses others before downloading them',
+      timeout,
+      async () => {
+        vi.stubEnv('CI', '')
+        const project = await fixture('core-allow-import')
+        const expected = project.manifest.expect as {
+          otherHost: string
+          disallowed: string
+          host: string
+        }
+        const out = await build(host, project.root, project.manifest.entries, {
+          platform: 'browser',
+        })
+        expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(
+          expectedValues(project),
+        )
+        const refused = await buildError(
+          build(host, project.root, [expected.otherHost], { platform: 'browser' }),
+        )
+        expect(refused).toContain(expected.disallowed)
+        expect(refused).toContain(`Add "${expected.host}" to allowImport`)
+        // Nothing of the refused host reached the mirror.
+        const cacheDir = project.path('node_modules', '.unplugin-deno')
+        const mirrored = readdirSync(cacheDir, { recursive: true }).map(String)
+        expect(mirrored.filter((file) => file.includes(expected.host))).toEqual([])
+        for (const allowImport of [[...DEFAULT_ALLOW_IMPORT, expected.host], ['*']]) {
+          const allowed = await build(host, project.root, [expected.otherHost], {
+            platform: 'browser',
+            allowImport,
+          })
+          expect((await evaluateModule<{ values: unknown }>(allowed.entry)).values).toEqual(
+            expectedValues(project),
+          )
+        }
+      },
+    )
+  })
+
+  describe.runIf(runs('core-jsr-node-modules'))(`core-jsr-node-modules (${host})`, () => {
+    for (const engine of ['loader', 'deno'] as const) {
+      const skip = engine === 'deno' ? denoBinary.skipReason : undefined
+      it.skipIf(skip !== undefined)(
+        `resolves jsr: through node_modules/@jsr, never the JSR registry (${engine} engine${skip === undefined ? '' : `, skipped: ${skip}`})`,
+        timeout,
+        async () => {
+          const project = await fixture('core-jsr-node-modules')
+          const expected = project.manifest.expect as { packageDir: string }
+          const out = await build(
+            host,
+            project.root,
+            project.manifest.entries,
+            { platform: 'browser', engine, denoBinary: denoBinary.binary, debug: true },
+            { platform: 'browser' },
+          )
+          expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(
+            expectedValues(project),
+          )
+          const ids = slashed(entryChunk(out).moduleIds)
+          expect(ids.some((id) => id.includes(`/${expected.packageDir}/posix/join.js`))).toBe(true)
+          expect(
+            ids.filter((id) => id.includes('.unplugin-deno') || id.includes('jsr.io')),
+          ).toEqual([])
+          expect(
+            out.logs.some((log) =>
+              log.message.includes(
+                '[resolve] jsr:@std/path@^1/posix/join → npm:@jsr/std__path@^1/posix/join (node_modules/@jsr)',
+              ),
+            ),
+          ).toBe(true)
+        },
+      )
+    }
+  })
+
+  describe(`cachedOnly (${host})`, () => {
+    it(
+      'fails offline with CACHED_ONLY_MISS naming the import and `deno cache <entry>`',
+      timeout,
+      async () => {
+        const cache = await freshDenoDir()
+        onTestFinished(() => cache.dispose())
+        vi.stubEnv(TEST_DENO_DIR_ENV, cache.path)
+        const project = await fixture('core-remote-mirror')
+        const text = await buildError(
+          build(host, project.root, project.manifest.entries, {
+            platform: 'browser',
+            cachedOnly: true,
+          }),
+        )
+        expect(text).toContain('`cachedOnly` is set')
+        expect(text).toContain(
+          'Run `deno cache src/main.ts` (or `deno install`) with network access',
+        )
+        // Nothing was downloaded.
+        const remote = join(cache.path, 'remote')
+        expect(existsSync(remote) ? readdirSync(remote, { recursive: true }) : []).toEqual([])
+      },
+    )
+
+    it('builds from a warm cache without downloading', timeout, async () => {
+      const warm = await fixture('core-remote-mirror')
+      await build(host, warm.root, warm.manifest.entries, { platform: 'browser' })
+      // A new copy has an empty mirror: every remote module comes from Deno's cache.
+      const project = await fixture('core-remote-mirror')
+      const out = await build(host, project.root, project.manifest.entries, {
+        platform: 'browser',
+        cachedOnly: true,
+        debug: true,
+      })
+      expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(
+        expectedValues(project),
+      )
+      expect(mirrorLoads(out).length).toBeGreaterThan(0)
+      expect(out.logs.filter((log) => log.message.includes('Downloading'))).toEqual([])
+    })
+  })
+
+  describe(`core-private-registry (${host})`, () => {
+    it(
+      'installs npm packages from NPM_CONFIG_REGISTRY with the .npmrc auth token',
+      timeout,
+      async () => {
+        await using registry = await startMockRegistry()
+        const cache = await freshDenoDir()
+        onTestFinished(() => cache.dispose())
+        vi.stubEnv(TEST_DENO_DIR_ENV, cache.path)
+        const project = await fixture('core-private-registry')
+        // No .npmrc of the user's home directory.
+        vi.stubEnv('HOME', project.root)
+        vi.stubEnv('USERPROFILE', project.root)
+        vi.stubEnv('NPM_CONFIG_REGISTRY', registry.url)
+        await writeFile(
+          project.path('.npmrc'),
+          `//127.0.0.1:${registry.port}/:_authToken=secret-token\n`,
+        )
+        const out = await build(host, project.root, ['src/npm.ts'], {
+          platform: 'browser',
+          engine: 'loader',
+        })
+        const expected = project.manifest.expect as { npm: unknown }
+        expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(expected.npm)
+        expect(registry.requests).toContainEqual({
+          path: '/mock-pkg',
+          authorization: 'Bearer secret-token',
+        })
+        expect(registry.requests).toContainEqual({
+          path: '/mock-pkg/-/mock-pkg-1.0.0.tgz',
+          authorization: 'Bearer secret-token',
+        })
+      },
+    )
+
+    it(
+      'loads JSR packages from a private registry through the fetch option (loader engine)',
+      timeout,
+      async () => {
+        await using registry = await startMockRegistry()
+        const cache = await freshDenoDir()
+        onTestFinished(() => cache.dispose())
+        vi.stubEnv(TEST_DENO_DIR_ENV, cache.path)
+        const project = await fixture('core-private-registry')
+        // The vendored loader always asks https://jsr.io/: a fetch sends it to the registry.
+        const fetchImpl: typeof fetch = (input, init) =>
+          globalThis.fetch(
+            String(input instanceof Request ? input.url : input).replace(
+              'https://jsr.io/',
+              registry.url,
+            ),
+            {
+              ...init,
+              headers: {
+                ...Object.fromEntries(new Headers(init?.headers)),
+                authorization: 'Bearer jsr-token',
+              },
+            },
+          )
+        const out = await build(host, project.root, ['src/jsr.ts'], {
+          platform: 'browser',
+          engine: 'loader',
+          fetch: fetchImpl,
+        })
+        const expected = project.manifest.expect as { jsr: unknown }
+        expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(expected.jsr)
+        expect(registry.requests).toContainEqual({
+          path: '/@mock/pkg/1.0.0/mod.ts',
+          authorization: 'Bearer jsr-token',
+        })
+      },
+    )
+
+    it.skipIf(denoBinary.skipReason !== undefined)(
+      `loads JSR packages from JSR_URL with DENO_AUTH_TOKENS (deno engine${denoBinary.skipReason === undefined ? '' : `, skipped: ${denoBinary.skipReason}`})`,
+      timeout,
+      async () => {
+        await using registry = await startMockRegistry()
+        const cache = await freshDenoDir()
+        onTestFinished(() => cache.dispose())
+        vi.stubEnv(TEST_DENO_DIR_ENV, cache.path)
+        vi.stubEnv('JSR_URL', registry.url)
+        vi.stubEnv('DENO_AUTH_TOKENS', `jsr-token@127.0.0.1:${registry.port}`)
+        const project = await fixture('core-private-registry')
+        const out = await build(host, project.root, ['src/jsr.ts'], {
+          platform: 'browser',
+          engine: 'deno',
+          denoBinary: denoBinary.binary,
+        })
+        const expected = project.manifest.expect as { jsr: unknown }
+        expect((await evaluateModule<{ values: unknown }>(out.entry)).values).toEqual(expected.jsr)
+        expect(registry.requests).toContainEqual({
+          path: '/@mock/pkg/1.0.0/mod.ts',
+          authorization: 'Bearer jsr-token',
+        })
+      },
+    )
   })
 }

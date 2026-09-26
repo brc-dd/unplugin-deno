@@ -34,8 +34,11 @@ export const TYPESCRIPT_RULE: RuleSetRule = {
   options: { target: 'esnext' },
 }
 
-/** Options of {@link buildWithWebpack}: webpack configuration merged over the helper's. */
-export type WebpackBuildOptions = Configuration
+/**
+ * Options of {@link buildWithWebpack}: webpack configuration merged over the helper's, and the
+ * TypeScript rule to use instead of {@link TYPESCRIPT_RULE} (`false`: none).
+ */
+export type WebpackBuildOptions = Configuration & { typescriptRule?: RuleSetRule | false }
 
 /**
  * The configuration of {@link buildWithWebpack}: production mode without minification, source
@@ -51,7 +54,15 @@ export function webpackConfig(
   pluginOptions: Options = {},
   extra: WebpackBuildOptions = {},
 ): Configuration {
-  const { output, module, plugins = [], optimization, ...rest } = extra
+  const {
+    output,
+    module,
+    plugins = [],
+    optimization,
+    typescriptRule = TYPESCRIPT_RULE,
+    ...rest
+  } = extra
+  const typescript = typescriptRule === false ? [] : [typescriptRule]
   return {
     mode: 'production',
     context: fixtureDir,
@@ -68,7 +79,7 @@ export function webpackConfig(
       ...output,
     },
     optimization: { minimize: false, ...optimization },
-    module: { ...module, rules: [TYPESCRIPT_RULE, ...(module?.rules ?? [])] },
+    module: { ...module, rules: [...typescript, ...(module?.rules ?? [])] },
     plugins: [denoWebpack(pluginOptions), ...plugins],
     infrastructureLogging: { level: 'info', console: captureConsole(logs) },
   }

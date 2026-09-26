@@ -14,7 +14,14 @@
  * - `externalsPresets.web` (`http(s):`, `//` and `std:` imports) is turned off unless set
  *   explicitly and applied to the requests the plugin leaves to Rspack; `experiments.buildHttp`
  *   keeps the URLs it allows;
- * - mirror files are loaded through unplugin's `load` loader (code and source map).
+ * - once the project is loaded (`beforeRun`/`watchRun`; Rspack reads `module.rules` when it
+ *   creates its native compiler, at the first build), rules run the source transforms on local
+ *   script modules, load mirror files through unplugin's `load` loader (code and source map) and
+ *   load `.wasm` module imports (`../webpack/transforms.ts`), and the `deno.json` JSX settings go
+ *   to the `builtin:swc-loader` (and esbuild-loader, swc-loader) rules that do not configure JSX
+ *   (`../webpack/jsx.ts`);
+ * - npm packages bundled in several versions are reported when a compilation has built its
+ *   modules (`finishModules`), for the compiler's platform.
  *
  * TypeScript in local files is the user's `builtin:swc-loader` rule; synthesised modules and
  * mirror files are JavaScript.
@@ -23,7 +30,9 @@
  */
 import type { RspackCompiler } from 'unplugin'
 import type { ResolveTarget } from '../../core/resolve.js'
+import { writeSidecar } from '../../core/sidecar.js'
 import type { PluginState, StateHints } from '../../core/state.js'
+import { configureJsx } from '../webpack/jsx.js'
 import type { ExplicitPresets } from '../webpack/presets.js'
 import { presetMessages, takeOverPresets } from '../webpack/presets.js'
 import type { RouterHost } from '../webpack/requests.js'
@@ -33,17 +42,14 @@ import {
   ConfigReloader,
   conditionNames,
   entryInput,
-  loadLoader,
-  mirrorLoad,
   platformHint,
   Router,
   TAP_NAME,
   toHostError,
+  WatchedFiles,
 } from '../webpack/requests.js'
+import { SourceTransforms } from '../webpack/transforms.js'
 import { VirtualModules } from './synthetic.js'
-
-/** Code files of the mirror (raw assets have no source maps). */
-const CODE_FILE = /\.[cm]?js$/
 
 /** Options of {@link applyRspack}. */
 export interface RspackAdapterOptions {
@@ -78,6 +84,12 @@ export function applyRspack(
   const router = new Router(state, 'rspack', target)
   const reloader = options.reloader ?? new ConfigReloader(state)
   const virtual = new VirtualModules(state, compiler)
+  const watched = new WatchedFiles()
+  const transforms = new SourceTransforms(state, {
+    host: 'rspack',
+    platform: () => router.platform,
+    log,
+  })
   // Before Rspack applies its defaults: what the user set.
   const explicit: ExplicitPresets = {
     web: compiler.options.externalsPresets.web,
@@ -94,6 +106,28 @@ export function applyRspack(
     command: 'build',
   })
   let seeded = false
+  let setup: Promise<void> | undefined
+  /**
+   * Loads the project (standalone compilers) and adds what depends on it to the config, once,
+   * before Rspack reads `module.rules` (`beforeRun`, `watchRun`, or `beforeCompile` for hosts that
+   * compile directly). A failure is retried by the next build.
+   */
+  const configure = (): Promise<void> => {
+    setup ??= (async () => {
+      state.setLogTarget(log)
+      if (standalone && !state.ready) state.setHints(hints())
+      await state.prepare()
+      const { rules } = compiler.options.module
+      const added = await transforms.rules()
+      configureJsx(state, rules, 'rspack')
+      rules.push(...added)
+    })()
+    const current = setup
+    current.catch(() => {
+      if (setup === current) setup = undefined
+    })
+    return current
+  }
 
   // Applied now, so it runs before the externals and presets Rspack applies from the options.
   new compiler.rspack.ExternalsPlugin('module-import', (data, callback) => {
@@ -109,15 +143,8 @@ export function applyRspack(
     )
   }).apply(compiler)
 
-  compiler.options.module.rules.push(
-    // After Rspack's `with { type }` rules, which would make markers assets.
-    virtual.rule(),
-    {
-      test: CODE_FILE,
-      include: (path: string) => state.ready && state.mirror.isMirrorPath(path),
-      use: [loadLoader('rspack', mirrorLoad(state))],
-    },
-  )
+  // After Rspack's `with { type }` rules, which would make markers assets.
+  compiler.options.module.rules.push(virtual.rule())
 
   // After Rspack applied its defaults and before it applies the presets.
   compiler.hooks.environment.tap(TAP_NAME, () => {
@@ -135,10 +162,11 @@ export function applyRspack(
     }
   })
 
+  compiler.hooks.beforeRun.tapPromise(TAP_NAME, configure)
+
   compiler.hooks.beforeCompile.tapPromise(TAP_NAME, async () => {
     state.setLogTarget(log)
-    if (standalone && !state.ready) state.setHints(hints())
-    await state.prepare()
+    await configure()
     if (!seeded) {
       seeded = true
       await state.addEntrypoints(target, entryInput(compiler.options.entry, compiler.context))
@@ -148,6 +176,7 @@ export function applyRspack(
   let generation = reloader.generation
   compiler.hooks.watchRun.tapPromise(TAP_NAME, async (watching) => {
     state.setLogTarget(log)
+    await configure()
     const changed = [...(watching.modifiedFiles ?? []), ...(watching.removedFiles ?? [])]
     await reloader.reload(changed)
     if (reloader.generation === generation) return
@@ -165,14 +194,26 @@ export function applyRspack(
     log.attach((message) => {
       compilation.warnings.push(new compiler.rspack.WebpackError(message))
     })
-    for (const file of state.watchFiles()) {
-      compilation.fileDependencies.add(file)
-      compilation.buildDependencies.add(file)
-    }
+    // Missing files (a lockfile not created yet) are watched for their creation; all of them
+    // invalidate the persistent cache.
+    const files = state.watchFiles()
+    const { existing, missing } = watched.update(files)
+    for (const file of existing) compilation.fileDependencies.add(file)
+    for (const file of missing) compilation.missingDependencies.add(file)
+    for (const file of files) compilation.buildDependencies.add(file)
+    // Every import is resolved once the modules are built: report duplicate npm packages (X4).
+    compilation.hooks.finishModules.tap(TAP_NAME, () => {
+      state.setLogTarget(log)
+      if (state.ready) state.reportDuplicates(router.platform)
+    })
   })
 
   // `compilation` (not `thisCompilation`): child compilations resolve Deno specifiers too.
   compiler.hooks.compilation.tap(TAP_NAME, (_compilation, { normalModuleFactory }) => {
+    // Entry modules keep `import.meta.main` (the source transforms, §5.10).
+    normalModuleFactory.hooks.afterResolve.tap(TAP_NAME, (data) => {
+      transforms.entries.note(data.contextInfo.issuer, data.createData?.resource)
+    })
     normalModuleFactory.hooks.beforeResolve.tap(TAP_NAME, (data) => {
       router.note(
         { request: data.request, context: data.context, issuer: data.contextInfo.issuer },
@@ -191,7 +232,10 @@ export function applyRspack(
           }),
         synthetic: async (id) => virtual.request(id),
         dependOn: (files) => {
-          data.fileDependencies.push(...files)
+          for (const file of files) {
+            if (watched.isMissing(file)) data.missingDependencies.push(file)
+            else data.fileDependencies.push(file)
+          }
         },
       }
       await router.apply(data, data.contextInfo.issuer, data.attributes, host)
@@ -200,6 +244,14 @@ export function applyRspack(
 
   compiler.hooks.done.tapPromise(TAP_NAME, async () => {
     log.detach()
+    // The Deno-platform sidecar (`emitDenoConfig`, docs/plan.md S3) goes next to the output,
+    // before the engines are disposed below.
+    try {
+      await writeSidecar(state, compiler.outputPath, { platform: router.platform })
+    } catch (error) {
+      log.warn(`Cannot write the sidecar deno.json/deno.lock: ${String(error)}`)
+      log.flush()
+    }
     try {
       if (standalone && !compiler.watchMode) await state.close()
       else await state.flush()

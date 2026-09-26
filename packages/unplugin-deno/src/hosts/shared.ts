@@ -5,6 +5,7 @@
  *
  * @module
  */
+import { dirname, resolve as resolvePath } from 'node:path'
 import type { UnpluginContextMeta } from 'unplugin'
 import type { AstLang, AstParser } from '../core/attributes.js'
 import type { JsxTransform } from '../core/jsx.js'
@@ -14,6 +15,36 @@ import { withDenoType } from '../core/id.js'
 import type { PlatformHint } from '../core/platform.js'
 import type { Logger } from '../diagnostics/logger.js'
 import { createConsoleLogger } from '../diagnostics/logger.js'
+
+/** The output options of a Rollup-family `writeBundle` call, as far as the adapters read them. */
+export interface RollupOutputLike {
+  dir?: string | undefined
+  file?: string | undefined
+}
+
+/** An output file of a Rollup-family bundle, as far as the adapters read it. */
+export interface RollupBundleItemLike {
+  type: string
+  fileName: string
+  isEntry?: boolean | undefined
+}
+
+/**
+ * The directory of the first entry chunk a Rollup-family `writeBundle` wrote (the output `dir`,
+ * or the directory of `file`, when no chunk is an entry), resolved against the working directory
+ * like Rollup does; `undefined` without an output location.
+ */
+export function rollupEntryDirectory(
+  output: RollupOutputLike | undefined,
+  bundle: Readonly<Record<string, RollupBundleItemLike>> | undefined,
+): string | undefined {
+  const base = output?.dir ?? (output?.file === undefined ? undefined : dirname(output.file))
+  if (base === undefined) return undefined
+  const entry = Object.values(bundle ?? {}).find(
+    (item) => item.type === 'chunk' && item.isEntry === true,
+  )
+  return entry === undefined ? resolvePath(base) : dirname(resolvePath(base, entry.fileName))
+}
 
 /** Host facts the core needs; the core never imports a host package. */
 export interface HostContext {

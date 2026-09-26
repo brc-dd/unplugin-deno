@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "colors": "https://unpkg.com/kleur@4.1.5/colors.mjs"
+  }
+}

@@ -99,6 +99,11 @@ export function runDeno(
     const stop = (): void => {
       if (child.exitCode !== null || child.signalCode !== null) return
       child.kill('SIGTERM')
+      // The child may have forked (e.g. `sh -c` on dash): grandchildren inherit the pipes and would
+      // keep `close` from firing after the child died. A killed process's output is not needed.
+      child.stdin?.destroy()
+      child.stdout?.destroy()
+      child.stderr?.destroy()
       killTimer ??= setTimeout(() => {
         if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
       }, KILL_GRACE_MS)

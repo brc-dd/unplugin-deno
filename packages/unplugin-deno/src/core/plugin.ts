@@ -8,11 +8,12 @@ import { rspackApply } from '../hosts/rspack/index.js'
 import { viteHooks } from '../hosts/vite/index.js'
 import { webpackApply } from '../hosts/webpack/index.js'
 import type { HostResolvedId, TransformHostContext } from '../hosts/shared.js'
-import { toRollupResult, transformContext } from '../hosts/shared.js'
+import { rollupEntryDirectory, toRollupResult, transformContext } from '../hosts/shared.js'
 import { isDenoType } from './attributes.js'
 import { withDenoType } from './id.js'
 import type { Options } from './options.js'
 import { resolveOptions } from './options.js'
+import { writeSidecar } from './sidecar.js'
 import { PluginState, transformCodeFilter } from './state.js'
 
 /** The plugin name reported to every host. */
@@ -159,6 +160,16 @@ function genericHooks(state: PluginState): UnpluginOptions {
       state.reportDuplicates()
       if (context.meta?.watchMode === true) await state.flush()
       else await state.close()
+    },
+    // The sidecar deno.json and deno.lock of Deno platform output (S3), next to the entry chunk.
+    async writeBundle(this: unknown, ...args: unknown[]) {
+      if (state.options.emitDenoConfig === false || !state.ready) return
+      const context = this as RuntimeContext
+      const [output, bundle] = args as Parameters<typeof rollupEntryDirectory>
+      const dir = rollupEntryDirectory(output, bundle)
+      if (dir === undefined) return
+      state.setLogTarget(context)
+      await writeSidecar(state, dir, { dispose: context.meta?.watchMode !== true })
     },
   }
   // Import attributes, `import.meta.main`, env inlining and the `Deno.*` check all off.

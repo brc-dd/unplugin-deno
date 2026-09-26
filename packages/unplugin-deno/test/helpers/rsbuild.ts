@@ -5,7 +5,7 @@
  */
 import { rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { EnvironmentConfig, RsbuildConfig } from '@rsbuild/core'
+import type { EnvironmentConfig, RsbuildConfig, RsbuildPlugin, Rspack } from '@rsbuild/core'
 import { createRsbuild } from '@rsbuild/core'
 import { vi } from 'vitest'
 import type { Options } from '../../src/core/options.js'
@@ -59,12 +59,23 @@ export async function buildWithRsbuild(
   const environments = options.environments ?? { web: {} }
   const { plugins = [], ...config } = options.config ?? {}
   const started = performance.now()
+  // Rsbuild rejects a failing build with a generic error; its stats hold the messages.
+  let built: Rspack.Stats | Rspack.MultiStats | undefined
+  const recorder: RsbuildPlugin = {
+    name: 'test-stats-recorder',
+    setup(api) {
+      api.onAfterBuild(({ stats }) => {
+        built = stats
+      })
+    },
+  }
   const rsbuild = await createRsbuild({
     cwd: fixtureDir,
     config: {
       mode: 'production',
-      logLevel: 'error',
-      plugins: [denoRsbuild(pluginOptions), ...plugins],
+      // Failing builds are reported by the thrown HostBuildError.
+      logLevel: 'silent',
+      plugins: [denoRsbuild(pluginOptions), ...plugins, recorder],
       source: { entry: entryObject(fixtureDir, entries) },
       output: {
         filenameHash: false,
@@ -97,8 +108,17 @@ export async function buildWithRsbuild(
     },
   })
   try {
-    const { stats, close } = await rsbuild.build()
-    await close()
+    const stats = await rsbuild.build().then(
+      async ({ stats: result, close }) => {
+        await close()
+        return result
+      },
+      (error: unknown) => {
+        // The environments' errors, when the stats have them.
+        if (built !== undefined && built.hasErrors()) return built
+        throw error
+      },
+    )
     if (stats === undefined) throw new Error('Rsbuild returned no stats')
     const list = 'stats' in stats ? stats.stats : [stats]
     const results: Record<string, BuildResult> = {}

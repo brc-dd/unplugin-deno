@@ -105,11 +105,13 @@ describe('runDeno', () => {
   })
 
   it.skipIf(onWindows)('kills a process that outlives its timeout or is aborted', async () => {
+    // A JavaScript sleeper, not `sh -c 'sleep 30'`: dash forks `sleep`, which would survive the kill.
+    const sleeper = [process.execPath, ['-e', 'setTimeout(() => {}, 30_000)']] as const
     const started = performance.now()
-    const timedOut = await runDeno('sh', ['-c', 'sleep 30'], { timeoutMs: 100 })
+    const timedOut = await runDeno(sleeper[0], [...sleeper[1]], { timeoutMs: 100 })
     expect(timedOut).toMatchObject({ timedOut: true, aborted: false })
     const controller = new AbortController()
-    const running = runDeno('sh', ['-c', 'sleep 30'], { signal: controller.signal })
+    const running = runDeno(sleeper[0], [...sleeper[1]], { signal: controller.signal })
     setTimeout(() => controller.abort(), 50)
     expect(await running).toMatchObject({ timedOut: false, aborted: true })
     expect(performance.now() - started).toBeLessThan(10_000)
