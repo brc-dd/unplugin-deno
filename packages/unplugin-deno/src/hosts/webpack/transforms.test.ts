@@ -79,7 +79,8 @@ describe('SourceTransforms', () => {
     expect(await transforms.transform(code, entry)).toBeNull()
     const lib = await transforms.transform(code, path('src/lib.ts'))
     expect(lib?.code).toBe('export const main: boolean = false\n')
-    expect(lib?.map?.sources).toEqual([path('src/lib.ts')])
+    // Source maps use `/` separators, also on Windows.
+    expect(lib?.map?.sources).toEqual([path('src/lib.ts').replaceAll('\\', '/')])
   })
 
   it('inlines environment variables for the browser, watching the .env files', async () => {
