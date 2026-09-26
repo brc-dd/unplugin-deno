@@ -1450,7 +1450,9 @@ class DenoCliEngine implements Engine {
     const rootUrl = toFileUrl(rootPath)
     const args = ['info', '--json', '--allow-import', ...(await this.#graphArgs())]
     if (noNpm) args.push('--no-npm')
-    args.push(rootPath)
+    // As a URL: on Windows `deno info C:\…\root.mjs` reads the drive letter as a URL scheme and
+    // reports the root as an external module without dependencies.
+    args.push(rootUrl)
     let result: DenoRunResult
     try {
       result = await runDeno(this.#binary, args, {
