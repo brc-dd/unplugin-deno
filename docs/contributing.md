@@ -14,6 +14,7 @@ unplugin-deno/
 ├─ README.md                 # user-facing README (copied to packages/unplugin-deno/README.md, see "Release")
 ├─ .changeset/               # pending changesets (see "Release")
 ├─ .github/workflows/ci.yml  # lint, test matrix (3 OS × Node 22/26, Deno, Bun), build and package checks, examples
+├─ .github/workflows/release.yml  # version pull request, publishing to npm and JSR (see "Release")
 ├─ packages/unplugin-deno/   # the published package (npm `unplugin-deno`, JSR `@brc-dd/unplugin-deno`)
 │  ├─ src/
 │  │  ├─ index.ts            # the unplugin instance + public types and errors
@@ -33,7 +34,8 @@ unplugin-deno/
 │  │  ├─ data/               # import-map test data from other projects, each with a SOURCE.md
 │  │  ├─ integration/        # builds fixtures with the real bundlers and asserts on the output
 │  │  └─ helpers/            # shared test utilities (temp dirs, builders, normalize output) + their tests
-│  ├─ scripts/               # vendor-loader.ts and deno-loader-overlay/ (generate vendor/deno-loader)
+│  ├─ scripts/               # vendor-loader.ts and deno-loader-overlay/ (generate vendor/deno-loader);
+│  │                         # sync-version.ts and jsr-publish.ts (release, see "Release")
 │  ├─ deno.json              # JSR manifest (see "Release")
 │  └─ tsdown.config.ts vitest.config.ts tsconfig.json
 ├─ examples/                 # runnable end-user examples, one directory per scenario
@@ -55,9 +57,9 @@ live in `test/integration/`, the helpers' own tests in `test/helpers/*.test.ts`.
   the latest Deno 2 and the latest Bun. The `deno` engine needs a Deno ≥ 2.8.3 binary. Building (tsdown) and running
   `scripts/*.ts` (native type stripping) need Node ≥ 22.18.
 - Build: **tsdown** (Rolldown-based), `pnpm build`. ESM only, flat `dist/*.js` + `dist/*.d.ts`
-  (`fixedExtension: false`); entry files start with a `@ts-self-types` comment for JSR. Type declarations are
-  emitted by tsdown with **TypeScript 6** (its declaration output does not support TypeScript 7 yet);
-  `pnpm typecheck` runs `tsc --noEmit`.
+  (`fixedExtension: false`); entry files start with a `@ts-self-types` comment for JSR, and each declaration-only chunk
+  gets an empty `.js` twin with such a comment (see "Release"). Type declarations are emitted by tsdown with
+  **TypeScript 6** (its declaration output does not support TypeScript 7 yet); `pnpm typecheck` runs `tsc --noEmit`.
 - Tests: **Vitest**. `pnpm test` runs under Node; `pnpm test:deno` (`deno run -A npm:vitest run`) and `pnpm test:bun`
   (`bun --bun x vitest run`; without `--bun`, `bunx` honours vitest's Node shebang) run the same suite under the
   other runtimes (CI runs all three on Linux, macOS and Windows). To run one file:
@@ -206,22 +208,93 @@ Rsbuild tests production builds of one or more environments; no test starts thei
 
 ## Release
 
-Not set up yet: `pnpm release` fails on purpose until the release workflow lands, and nothing has been published (npm
-has only a `0.0.0` placeholder of `unplugin-deno`, JSR has no `@brc-dd/unplugin-deno`; checked 2026-09-26). What
-exists:
+Releases are automated: changesets describe the changes, and `.github/workflows/release.yml` turns them into a version
+pull request and publishes merged versions to npm and JSR. Nothing is published yet: npm has only a `0.0.0` placeholder
+of `unplugin-deno` (owner `brc-dd`), and `@brc-dd/unplugin-deno` on JSR exists without versions and without a linked
+repository (created 2026-09-26). The pending changeset, `.changeset/first-release.md` (a `minor` bump), makes the first
+release 0.1.0.
 
-- Versioning: **changesets** (`pnpm changeset`; `.changeset/config.json`, public access, oxfmt formatting).
-  The pending changeset (`.changeset/first-release.md`, one `minor` bump) describes 0.1.0 for users;
-  `pnpm changeset status` lists the bumps.
-- npm: `packages/unplugin-deno` publishes `dist/` and `vendor/` (plus `package.json`, `README.md`, `LICENSE`).
-  Its `README.md` and `LICENSE` are copies of the root files (npm and JSR publish from the package directory); keep
-  them identical (`cp README.md packages/unplugin-deno/README.md`; links in the README are absolute URLs so they work
-  on npm and JSR). Check with `pnpm -F unplugin-deno publint` and `pnpm -F unplugin-deno attw`
-  (`attw --pack --profile esm-only`: `require()` and `node10` resolution are unsupported by design).
-- JSR: `packages/unplugin-deno/deno.json` (`@brc-dd/unplugin-deno`) maps the same subpaths to `dist/*.js` (build
-  first) and maps the bare npm dependencies to `npm:` specifiers in `imports`. Its `version` must be kept in sync
-  with `package.json` (changesets only bumps the latter). `lock: false` keeps Deno from writing a `deno.lock` when
-  the tests run under Deno in that directory. `pnpm jsr:dry-run` runs `deno publish --dry-run --allow-dirty`.
+### From a change to a release
+
+1. A pull request with a user-visible change adds a changeset: run `pnpm changeset`, pick `unplugin-deno` and the bump
+   (while 0.x, `minor` for features and breaking changes, `patch` for fixes) and describe the change for users. Until
+   the first release, extend `.changeset/first-release.md` instead. `pnpm changeset status` lists the pending bumps.
+2. Every push to `main` runs the Release workflow (Node 26, the pnpm of `packageManager`, Deno 2): `pnpm install`,
+   `pnpm check-version`, then `changesets/action@v2` (v2 is the major that supports Changesets CLI v3). While
+   changesets are pending, the action runs `pnpm run version-packages` (`changeset version`, which bumps
+   `package.json`, writes `CHANGELOG.md` and deletes the changesets; `pnpm sync-version`, which copies the version into
+   `deno.json`; `pnpm install --lockfile-only`) and opens or updates the `chore: version packages` pull request from
+   the `changeset-release/main` branch. GitHub starts no workflows for pull requests that a workflow's `GITHUB_TOKEN`
+   creates, so CI does not run on it by itself: close and reopen it to run CI.
+3. Merging the version pull request runs the workflow again. With no changesets left, the action runs
+   `pnpm run release`: `pnpm build`; `changeset publish`, which runs `pnpm publish` for each version npm does not have
+   and tags it `unplugin-deno@<version>`; then `pnpm -F unplugin-deno jsr:publish` (`scripts/jsr-publish.ts`), which
+   asks the JSR API and runs `deno publish` unless JSR already has the version. When the package does not exist on JSR,
+   or (in GitHub Actions) is not linked to this repository, OIDC cannot publish it: the script then prints a notice and
+   succeeds. The action pushes the tags and creates a GitHub release with the changelog entry. Every later
+   push to `main` without pending changesets runs `pnpm run release` again, which publishes only what is missing, so a
+   failed publish is retried by re-running the workflow or by the next push.
+
+### One-time setup (repository owner)
+
+- GitHub: Settings → Actions → General → Workflow permissions → enable "Allow GitHub Actions to create and approve pull
+  requests" (off as of 2026-09-26); without it the action cannot open the version pull request. The job requests
+  `contents: write`, `pull-requests: write` and `id-token: write` itself, so the default token can stay read-only.
+- npm, trusted publishing (no token): on npmjs.com, package `unplugin-deno` → Settings → Trusted Publisher → GitHub
+  Actions: user `brc-dd`, repository `unplugin-deno`, workflow filename `release.yml`, no environment. It needs a
+  GitHub-hosted runner and `id-token: write`. `changeset publish` uses `pnpm publish`, and pnpm 12 does the OIDC token
+  exchange itself (npm's "npm CLI 11.5.1 or later" applies to `npm publish`; Node 26 ships npm 11.12 or later anyway).
+  Once it works, "Require two-factor authentication and disallow tokens" in the package settings blocks token
+  publishing. npm attaches provenance only for public repositories: while this repository is private, pnpm publishes
+  without it (with a "Skipped setting provenance" warning), whereas `npm publish` would fail on
+  `publishConfig.provenance`.
+- npm fallback: a repository secret `NPM_TOKEN` (a granular access token that can publish `unplugin-deno`). When it
+  exists, the workflow adds `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` to `~/.npmrc` and passes the secret
+  as `NODE_AUTH_TOKEN`; pnpm tries OIDC first and uses the token when the exchange fails. Delete the secret once trusted
+  publishing works.
+- JSR, once the known issue below is fixed: the package exists (else create it at https://jsr.io/new, scope `@brc-dd`,
+  name `unplugin-deno`); link `brc-dd/unplugin-deno` in its Settings tab. JSR links only public GitHub repositories,
+  so the repository must be public first. Linking switches JSR publishing on: `deno publish` in the workflow then
+  authenticates with OIDC (no secret) and adds provenance, and the next run of `pnpm run release` publishes the
+  current version.
+
+### Publishing by hand
+
+If the workflow cannot publish: on an up-to-date `main` that contains the merged version pull request, run
+`pnpm install`, `npm login` (pnpm reads the token from `~/.npmrc`) and `pnpm release`. `pnpm publish` asks for a
+one-time password when the account uses 2FA, and `deno publish` opens the browser to authorize. Then push the tag
+(`git push origin unplugin-deno@<version>`) and create the GitHub release from the changelog entry. For JSR alone:
+`pnpm build && pnpm -F unplugin-deno jsr:publish`. Local publishes carry no provenance.
+
+### Package contents and checks
+
+- npm: `files` publishes `dist/`, `vendor/`, `README.md`, `LICENSE` and `CHANGELOG.md` (with `package.json`); no
+  sources, tests or source maps. `exports` maps each subpath to `./dist/<name>.js` without `types` conditions:
+  TypeScript finds the `.d.ts` beside each file. The `prepare` script (tsdown) runs on `pnpm install` in the workspace
+  and before `pnpm pack` and `pnpm publish` (pnpm 12 runs `prepack` and `prepare` for both), so a publish always ships
+  a fresh build. `publishConfig` sets public access and provenance. Check the package with `npm pack --dry-run`,
+  `pnpm -F unplugin-deno publint` and `pnpm -F unplugin-deno attw` (`attw --pack --profile esm-only`: `require()` and
+  `node10` resolution are unsupported by design).
+- JSR: `packages/unplugin-deno/deno.json` (`@brc-dd/unplugin-deno`) exports the same subpaths as `package.json`, in the
+  same order, and maps the npm dependencies to `npm:` specifiers with the same ranges in `imports`. `publish.include`
+  lists `dist`, `vendor`, `README.md` and `LICENSE` (`deno.json` is always published); `"!dist"` in `publish.exclude`
+  un-ignores the git-ignored build. `lock: false` keeps Deno from writing a `deno.lock` when the tests run under Deno
+  in that directory. `pnpm jsr:dry-run` (after `pnpm build`) runs `deno publish --dry-run --allow-dirty`, which
+  type-checks the published files as JSR does. The package is about 6.2 MB, 5.5 MB of it the wasm: below JSR's limits
+  of 20 MB for the files of a version and for a single file (https://jsr.io/docs/quotas-and-limits; the 4 MB per-file
+  figure on JSR's troubleshooting page is outdated, the registry's `MAX_FILE_SIZE` is 20 MiB).
+- Versions: changesets bumps only `package.json`. `pnpm sync-version` (`scripts/sync-version.ts`) copies the version
+  into `deno.json`; `pnpm check-version` (run by the release workflow) and `src/manifests.test.ts` fail when they
+  differ. The test also compares the exports and dependency ranges of both manifests and checks that the package's
+  `README.md` and `LICENSE` are copies of the root files: npm and JSR publish from the package directory, so after
+  editing the README run `cp README.md packages/unplugin-deno/README.md` (its links are absolute URLs so they work on
+  npm and JSR).
+- Types for Deno and JSR: entry files start with `/* @ts-self-types="./<name>.d.ts" */`. Declarations shared by
+  several entries go into a declaration-only chunk (`options-<hash>.d.ts`) that the entry declarations import as
+  `./options-<hash>.js`; TypeScript resolves that to the `.d.ts`, Deno needs the `.js`. rolldown-plugin-dts has no
+  option that avoids such chunks, so a plugin in `tsdown.config.ts` emits an `export {}` twin with a `@ts-self-types`
+  comment for each one. Deno also checks `vendor/deno-loader/mod.d.ts` (through the `@ts-self-types` comment of
+  `mod.js`), so `scripts/vendor-loader.ts` restores the `[Symbol.dispose]()` members its generated declarations drop.
 - Vendored loader: `node scripts/vendor-loader.ts [version]` in `packages/unplugin-deno` (or
   `pnpm -F unplugin-deno vendor:loader`) downloads `@jsr/deno__loader` from npm.jsr.io, verifies its integrity,
   copies the Node.js code path, applies patches that each assert how often their pattern occurs (so upstream drift
@@ -229,26 +302,15 @@ exists:
   reproducible: re-running for the same version changes nothing, so `git diff` shows exactly what a new version
   changes.
 
-Known issues to resolve before the first JSR publish:
+### Known issues
 
-- `pnpm jsr:dry-run` (after `pnpm build`) fails type checking with three errors (checked 2026-09-26 with Deno 2.9.7):
-  - `TS2307: Cannot find module '…/dist/options-<hash>.js'`, at `dist/index.d.ts`. Declarations shared by several
-    entries go into a declaration-only chunk (`options-<hash>.d.ts`, with no `.js` beside it) that the entry `.d.ts`
-    files import as `./options-<hash>.js`; TypeScript resolves that to the `.d.ts`, Deno's checker does not. Verified
-    earlier: with a stub `options-<hash>.js` containing `/* @ts-self-types="./options-<hash>.d.ts" */` that error goes
-    away, and without the entries' `@ts-self-types` banners the check passes but warns
-    `unsupported-javascript-entrypoint` for all 12 entries (JSR users would get no types). Candidate fixes: emit such
-    stubs from a tsdown hook, emit self-contained declarations per entry, or publish the TypeScript sources to JSR.
-  - `TS2420: Class 'Workspace' incorrectly implements interface 'Disposable'` and the same for `Loader`, at
-    `vendor/deno-loader/mod.d.ts` (lines 139 and 152): since the vendored `mod.js` carries
-    `// @ts-self-types="./mod.d.ts"`, Deno checks that declaration file, whose classes say `implements Disposable` but
-    declare no `[Symbol.dispose]()` member. A candidate fix is a patch in `scripts/vendor-loader.ts` that adds the
-    member to the declarations (or drops the `implements` clause).
-
-  CI runs the dry run with `continue-on-error`.
-- Under Deno, a JSR package is loaded from `https://jsr.io/…`, but the vendored glue locates its wasm with
-  `fileURLToPath(import.meta.url)` and `readFileSync` (the Node.js path, forced on every runtime). Before publishing
-  to JSR, the loader must fall back to a non-`file:` strategy (fetching the wasm, or Deno's Wasm module import).
+- Before linking the JSR package: under Deno, a JSR package is loaded from `https://jsr.io/…`, but the vendored glue
+  locates its wasm with `fileURLToPath(import.meta.url)` and `readFileSync` (the Node.js path, forced on every
+  runtime), so the default engine cannot load from JSR. The loader must fall back to a non-`file:` strategy (fetching
+  the wasm, or Deno's Wasm module import) first.
+- With the first release: remove the "First release pending" note from `README.md` (and its copy) in a commit to
+  `main` before merging the version pull request, since npm and JSR show the README of the published version; while
+  JSR publishing is off, also drop the `deno add jsr:@brc-dd/unplugin-deno` alternative from "Install".
 
 ## Working as a coding agent here
 

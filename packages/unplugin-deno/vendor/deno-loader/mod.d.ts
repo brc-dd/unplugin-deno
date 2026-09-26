@@ -138,6 +138,7 @@ export declare class ResolveError extends Error {
 }
 /** Resolves the workspace. */ export declare class Workspace implements Disposable {
   /** Creates a `DenoWorkspace` with the provided options. */ constructor(options?: WorkspaceOptions);
+  [Symbol.dispose](): void;
   /** Creates a loader that uses this this workspace. */ createLoader(): Promise<Loader>;
 }
 export declare enum RequestedModuleType {
@@ -151,6 +152,7 @@ export interface EntrypointDiagnostic {
 }
 /** A loader for resolving and loading urls. */ export declare class Loader implements Disposable {
   /** @internal */ constructor(loader: WasmLoader, debug: boolean);
+  [Symbol.dispose](): void;
   /** Adds entrypoints to the loader.
    *
    * It's useful to specify entrypoints so that the loader can resolve

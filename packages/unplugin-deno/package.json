@@ -1,18 +1,28 @@
 {
   "name": "unplugin-deno",
   "version": "0.0.0",
-  "description": "Deno module resolution (jsr:, npm:, https:, import maps, workspaces) for Vite, Rolldown, Rollup, esbuild, webpack, Rspack, Bun and Farm",
+  "description": "Deno's module resolution (jsr:, npm:, https:, deno.json import maps and workspaces, deno.lock) for Vite, Rolldown, Rollup, esbuild, webpack, Rspack and Rsbuild",
   "keywords": [
     "bun",
     "deno",
+    "deno-lock",
     "esbuild",
+    "esbuild-plugin",
+    "import-map",
     "jsr",
     "rolldown",
+    "rolldown-plugin",
     "rollup",
+    "rollup-plugin",
+    "rsbuild",
+    "rsbuild-plugin",
     "rspack",
+    "rspack-plugin",
     "unplugin",
     "vite",
-    "webpack"
+    "vite-plugin",
+    "webpack",
+    "webpack-plugin"
   ],
   "homepage": "https://github.com/brc-dd/unplugin-deno#readme",
   "bugs": "https://github.com/brc-dd/unplugin-deno/issues",
@@ -25,60 +35,31 @@
   },
   "files": [
     "dist",
-    "vendor"
+    "vendor",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "type": "module",
   "sideEffects": false,
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./vite": {
-      "types": "./dist/vite.d.ts",
-      "default": "./dist/vite.js"
-    },
-    "./rolldown": {
-      "types": "./dist/rolldown.d.ts",
-      "default": "./dist/rolldown.js"
-    },
-    "./rollup": {
-      "types": "./dist/rollup.d.ts",
-      "default": "./dist/rollup.js"
-    },
-    "./esbuild": {
-      "types": "./dist/esbuild.d.ts",
-      "default": "./dist/esbuild.js"
-    },
-    "./webpack": {
-      "types": "./dist/webpack.d.ts",
-      "default": "./dist/webpack.js"
-    },
-    "./rspack": {
-      "types": "./dist/rspack.d.ts",
-      "default": "./dist/rspack.js"
-    },
-    "./rsbuild": {
-      "types": "./dist/rsbuild.d.ts",
-      "default": "./dist/rsbuild.js"
-    },
-    "./bun": {
-      "types": "./dist/bun.d.ts",
-      "default": "./dist/bun.js"
-    },
-    "./farm": {
-      "types": "./dist/farm.d.ts",
-      "default": "./dist/farm.js"
-    },
-    "./register": {
-      "types": "./dist/register.d.ts",
-      "default": "./dist/register.js"
-    },
-    "./api": {
-      "types": "./dist/api.d.ts",
-      "default": "./dist/api.js"
-    },
+    ".": "./dist/index.js",
+    "./vite": "./dist/vite.js",
+    "./rolldown": "./dist/rolldown.js",
+    "./rollup": "./dist/rollup.js",
+    "./esbuild": "./dist/esbuild.js",
+    "./webpack": "./dist/webpack.js",
+    "./rspack": "./dist/rspack.js",
+    "./rsbuild": "./dist/rsbuild.js",
+    "./bun": "./dist/bun.js",
+    "./farm": "./dist/farm.js",
+    "./register": "./dist/register.js",
+    "./api": "./dist/api.js",
     "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsdown",
@@ -88,7 +69,10 @@
     "test:bun": "bun --bun x vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "vendor:loader": "node scripts/vendor-loader.ts",
+    "sync-version": "node scripts/sync-version.ts",
+    "check-version": "node scripts/sync-version.ts --check",
     "jsr:dry-run": "deno publish --dry-run --allow-dirty",
+    "jsr:publish": "node scripts/jsr-publish.ts",
     "publint": "publint",
     "attw": "attw --pack --profile esm-only"
   },

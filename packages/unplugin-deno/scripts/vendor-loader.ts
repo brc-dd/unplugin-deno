@@ -220,6 +220,17 @@ function modDtsPatches(): Patch[] {
       find: /\n?\/\/# sourceMappingURL=mod\.d\.ts\.map\s*$/,
       replace: '\n',
     },
+    {
+      description:
+        'Declare the `[Symbol.dispose](): void` members of `Workspace` and `Loader` after their ' +
+        'constructors, as `mod.ts` does: the generated declarations drop them, so ' +
+        '`implements Disposable` fails type checking (TS2420) when Deno checks this file, which ' +
+        '`deno publish` does for the JSR package.',
+      // Matches nothing (and fails) once upstream declares the member; then drop this patch.
+      find: /( implements Disposable \{\n[^\n]*\bconstructor\([^)\n]*\);\n)(?!\s*\[Symbol\.dispose\])/,
+      replace: '$1  [Symbol.dispose](): void;\n',
+      count: 2,
+    },
   ]
 }
 

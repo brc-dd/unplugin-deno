@@ -8,8 +8,8 @@ Node.js, Deno or Bun, and Deno does not need to be installed: the plugin ships D
 for the few features that resolver lacks. Built on [unplugin](https://github.com/unjs/unplugin).
 
 > [!IMPORTANT]
-> Pre-release (0.1). Nothing is published yet: npm has only a `0.0.0` placeholder and JSR has no
-> package, so the install commands below work once 0.1.0 is released.
+> First release pending (0.1.0). Nothing is published yet: npm has only a `0.0.0` placeholder and
+> JSR no version, so the install commands below work once 0.1.0 is released.
 
 ## Hosts
 
