@@ -2,7 +2,10 @@ import type { ExternalIdResult, UnpluginFactory, UnpluginOptions } from 'unplugi
 import { esbuildSetup } from '../hosts/esbuild/index.js'
 import { rolldownHooks } from '../hosts/rolldown/index.js'
 import { rollupHooks } from '../hosts/rollup/index.js'
+import { rsbuildHooks } from '../hosts/rsbuild/index.js'
+import { rspackApply } from '../hosts/rspack/index.js'
 import { viteHooks } from '../hosts/vite/index.js'
+import { webpackApply } from '../hosts/webpack/index.js'
 import type { HostResolvedId } from '../hosts/shared.js'
 import { toRollupResult } from '../hosts/shared.js'
 import type { AstLang, AstParser } from './attributes.js'
@@ -22,8 +25,8 @@ const ROLLUP_FAMILY: ReadonlySet<string> = new Set(['rollup', 'rolldown', 'vite'
  * The factory behind every host entry (docs/architecture.md §6): the generic hooks for the
  * Rollup family, with the Rolldown and Rollup specifics under unplugin's escape hatches. esbuild
  * gets only `esbuild.setup` (unplugin's generic esbuild adapter would register a catch-all
- * `onResolve` first, §6.4); webpack, Rspack, Rsbuild, Bun, Farm and the Node.js loader are not
- * supported yet and get an inert plugin.
+ * `onResolve` first, §6.4); webpack, Rspack and Rsbuild get their adapters' hooks (§6.5, §6.6); Bun,
+ * Farm and the Node.js loader are not supported yet and get an inert plugin.
  *
  * @throws {DenoPluginError} `OPTIONS_INVALID` for invalid options.
  */
@@ -31,6 +34,18 @@ export const unpluginFactory: UnpluginFactory<Options | undefined, false> = (opt
   if (meta.framework === 'esbuild') {
     const state = new PluginState(options, meta.framework)
     return { name: PLUGIN_NAME, esbuild: { setup: esbuildSetup(state) } }
+  }
+  if (meta.framework === 'webpack') {
+    const state = new PluginState(options, meta.framework)
+    return { name: PLUGIN_NAME, webpack: webpackApply(state) }
+  }
+  if (meta.framework === 'rspack') {
+    const state = new PluginState(options, meta.framework)
+    return { name: PLUGIN_NAME, rspack: rspackApply(state) }
+  }
+  if (meta.framework === 'rsbuild') {
+    const state = new PluginState(options, meta.framework)
+    return { name: PLUGIN_NAME, rsbuild: rsbuildHooks(state) }
   }
   if (!ROLLUP_FAMILY.has(meta.framework)) {
     resolveOptions(options, { root: process.cwd(), env: process.env })

@@ -89,8 +89,19 @@ describe('unpluginFactory', () => {
     ).toBe(true)
   })
 
+  it('gives webpack, Rspack and Rsbuild only their adapter hooks', () => {
+    expect(Object.keys(unpluginFactory({}, meta('webpack'))).toSorted()).toEqual([
+      'name',
+      'webpack',
+    ])
+    expect(Object.keys(unpluginFactory({}, meta('rspack'))).toSorted()).toEqual(['name', 'rspack'])
+    const rsbuild = unpluginFactory({}, meta('rsbuild'))
+    expect(Object.keys(rsbuild).toSorted()).toEqual(['name', 'rsbuild'])
+    expect(typeof rsbuild.rsbuild?.setup).toBe('function')
+  })
+
   it('keeps the other hosts inert until their adapters land', () => {
-    for (const framework of ['webpack', 'rspack', 'rsbuild', 'farm', 'bun', 'unloader'] as const) {
+    for (const framework of ['farm', 'bun', 'unloader'] as const) {
       expect(unpluginFactory({}, meta(framework))).toEqual({ name: PLUGIN_NAME })
     }
   })
