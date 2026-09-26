@@ -50,7 +50,7 @@ live in `test/integration/`, the helpers' own tests in `test/helpers/*.test.ts`.
 ## Toolchain
 
 - Package manager: **pnpm 12** (workspace; `packageManager` in the root `package.json`). pnpm ≥ 11 reads project
-  settings only from `pnpm-workspace.yaml`; `.npmrc` is for registries and auth. Optional peers are not installed
+  settings only from `pnpm-workspace.yaml` (there is no `.npmrc`). Optional peers are not installed
   automatically (`autoInstallPeers: false`): a test that needs webpack, Rspack, Rsbuild or Farm adds it as a
   devDependency.
 - Runtimes supported: **Node ≥ 22.12**, **Deno ≥ 2.7** (2.8+ recommended), **Bun ≥ 1.3**; CI tests Node 22 and 26,
@@ -244,10 +244,6 @@ release, 0.1.0, came from `.changeset/first-release.md` (a `minor` bump over the
   exchange itself (npm's "npm CLI 11.5.1 or later" applies to `npm publish`; Node 26 ships npm 11.12 or later anyway).
   Once it works, "Require two-factor authentication and disallow tokens" in the package settings blocks token
   publishing. npm attaches provenance only for public repositories (`publishConfig.provenance` is set).
-- npm fallback: a repository secret `NPM_TOKEN` (a granular access token that can publish `unplugin-deno`). When it
-  exists, the workflow adds `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` to `~/.npmrc` and passes the secret
-  as `NODE_AUTH_TOKEN`; pnpm tries OIDC first and uses the token when the exchange fails. Delete the secret once trusted
-  publishing works.
 - JSR: create the package (https://jsr.io/new, scope `@brc-dd`, name `unplugin-deno`) and link the public GitHub
   repository `brc-dd/unplugin-deno` in its Settings tab (JSR links only public repositories). `deno publish` in the
   workflow then authenticates with OIDC (no secret) and adds provenance.

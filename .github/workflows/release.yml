@@ -42,21 +42,10 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Check that deno.json and package.json have the same version
         run: pnpm check-version
-      # npm: trusted publishing (OIDC, no secret) once npmjs.com trusts this workflow. The optional
-      # NPM_TOKEN secret (a granular access token) is the fallback: pnpm tries OIDC first and uses
-      # the token when the exchange fails. The line is only written when the secret exists, since
-      # pnpm would otherwise send an empty token.
-      - name: Configure the NPM_TOKEN fallback
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -n "$NPM_TOKEN" ]; then
-            echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" >> "$HOME/.npmrc"
-            echo 'NPM_TOKEN is set: pnpm publish falls back to it when OIDC fails.'
-          fi
       # `version-packages`: changeset version, deno.json version sync, lockfile refresh.
-      # `release`: build, `changeset publish` (npm, skips published versions, tags), `deno publish`
-      # (JSR over OIDC once the package is linked to this repository; skips published versions).
+      # `release`: build, `changeset publish` (npm over trusted publishing, i.e. OIDC with no
+      # secret; skips published versions, tags), `deno publish` (JSR over OIDC; skips published
+      # versions).
       - uses: changesets/action@v2
         with:
           version-script: pnpm run version-packages
@@ -64,5 +53,3 @@ jobs:
           commit-message: 'chore: version packages'
           pr-title: 'chore: version packages'
           create-github-releases: true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
