@@ -16,9 +16,8 @@ Open:
   warning meanwhile), S4's `resolve.builtins` experiment, L8, the source-phase imports of L6,
   `import.meta.filename`/`dirname` (L7), DCE constants such as `IS_BROWSER` (L9), CommonJS-only packages and the full
   import chain in X3/S5, and the Bun adapter (`unplugin-deno/bun` and `/farm` are inert).
-- From M1: the first publish (the release workflow and a clean JSR dry run are in place, and the vendored loader now
-  loads its wasm from `https:` URLs too; npm waits for the one-time setup, JSR also for a public repository and
-  linking the package, see [contributing.md](contributing.md#release)), the D8 docs, R6's `browser: false` mappings for packages from Deno's
+- From M1: the first publish (0.1.0 through the version pull request; the release workflow, npm trusted publishing and
+  the JSR link are configured, see [contributing.md](contributing.md#release)), the D8 docs, R6's `browser: false` mappings for packages from Deno's
   global cache, and P2's Deno Deploy and `deno desktop` checks.
 - M3 as planned, S7 included.
 

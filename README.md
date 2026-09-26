@@ -7,10 +7,6 @@ Node.js, Deno or Bun, and Deno does not need to be installed: the plugin ships D
 ([`@deno/loader`](https://jsr.io/@deno/loader)) as WebAssembly, and uses an installed Deno only
 for the few features that resolver lacks. Built on [unplugin](https://github.com/unjs/unplugin).
 
-> [!IMPORTANT]
-> First release pending (0.1.0). Nothing is published yet: npm has only a `0.0.0` placeholder and
-> JSR no version, so the install commands below work once 0.1.0 is released.
-
 ## Hosts
 
 | Host             | Entry                    | Tested with                  |

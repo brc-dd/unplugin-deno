@@ -203,22 +203,20 @@ Rsbuild tests production builds of one or more environments; no test starts thei
   behavioural change.
 - `docs/plan.md`: goals, scope and milestones; only its progress note changes as work lands.
 - `src/{config,core,engine,hosts}/README.md`: one short module map per directory.
-- `.changeset/*.md`: what users see changing; until the first release, one changeset describes 0.1.0 as a whole.
+- `.changeset/*.md`: what users see changing, one file per change (see "Release").
 - `docs/research/`: historical; do not edit, add new findings as new files.
 
 ## Release
 
 Releases are automated: changesets describe the changes, and `.github/workflows/release.yml` turns them into a version
-pull request and publishes merged versions to npm and JSR. Nothing is published yet: npm has only a `0.0.0` placeholder
-of `unplugin-deno` (owner `brc-dd`), and `@brc-dd/unplugin-deno` on JSR exists without versions and without a linked
-repository (created 2026-09-26). The pending changeset, `.changeset/first-release.md` (a `minor` bump), makes the first
-release 0.1.0.
+pull request and publishes merged versions to npm (`unplugin-deno`) and JSR (`@brc-dd/unplugin-deno`). The first
+release, 0.1.0, came from `.changeset/first-release.md` (a `minor` bump over the `0.0.0` placeholder).
 
 ### From a change to a release
 
 1. A pull request with a user-visible change adds a changeset: run `pnpm changeset`, pick `unplugin-deno` and the bump
-   (while 0.x, `minor` for features and breaking changes, `patch` for fixes) and describe the change for users. Until
-   the first release, extend `.changeset/first-release.md` instead. `pnpm changeset status` lists the pending bumps.
+   (while 0.x, `minor` for features and breaking changes, `patch` for fixes) and describe the change for users.
+   `pnpm changeset status` lists the pending bumps.
 2. Every push to `main` runs the Release workflow (Node 26, the pnpm of `packageManager`, Deno 2): `pnpm install`,
    `pnpm check-version`, then `changesets/action@v2` (v2 is the major that supports Changesets CLI v3). While
    changesets are pending, the action runs `pnpm run version-packages` (`changeset version`, which bumps
@@ -235,27 +233,24 @@ release 0.1.0.
    push to `main` without pending changesets runs `pnpm run release` again, which publishes only what is missing, so a
    failed publish is retried by re-running the workflow or by the next push.
 
-### One-time setup (repository owner)
+### One-time setup (done for this repository on 2026-09-26; kept for forks and for reference)
 
-- GitHub: Settings → Actions → General → Workflow permissions → enable "Allow GitHub Actions to create and approve pull
-  requests" (off as of 2026-09-26); without it the action cannot open the version pull request. The job requests
-  `contents: write`, `pull-requests: write` and `id-token: write` itself, so the default token can stay read-only.
+- GitHub: Settings → Actions → General → Workflow permissions → "Allow GitHub Actions to create and approve pull
+  requests"; without it the action cannot open the version pull request. The job requests `contents: write`,
+  `pull-requests: write` and `id-token: write` itself, so the default token can stay read-only.
 - npm, trusted publishing (no token): on npmjs.com, package `unplugin-deno` → Settings → Trusted Publisher → GitHub
   Actions: user `brc-dd`, repository `unplugin-deno`, workflow filename `release.yml`, no environment. It needs a
   GitHub-hosted runner and `id-token: write`. `changeset publish` uses `pnpm publish`, and pnpm 12 does the OIDC token
   exchange itself (npm's "npm CLI 11.5.1 or later" applies to `npm publish`; Node 26 ships npm 11.12 or later anyway).
   Once it works, "Require two-factor authentication and disallow tokens" in the package settings blocks token
-  publishing. npm attaches provenance only for public repositories: while this repository is private, pnpm publishes
-  without it (with a "Skipped setting provenance" warning), whereas `npm publish` would fail on
-  `publishConfig.provenance`.
+  publishing. npm attaches provenance only for public repositories (`publishConfig.provenance` is set).
 - npm fallback: a repository secret `NPM_TOKEN` (a granular access token that can publish `unplugin-deno`). When it
   exists, the workflow adds `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` to `~/.npmrc` and passes the secret
   as `NODE_AUTH_TOKEN`; pnpm tries OIDC first and uses the token when the exchange fails. Delete the secret once trusted
   publishing works.
-- JSR: the package exists (else create it at https://jsr.io/new, scope `@brc-dd`, name `unplugin-deno`). What remains
-  is making the repository public (JSR links only public GitHub repositories) and linking `brc-dd/unplugin-deno` in the
-  package's Settings tab. Linking switches JSR publishing on: `deno publish` in the workflow then authenticates with OIDC (no secret) and adds
-  provenance, and the next run of `pnpm run release` publishes the current version.
+- JSR: create the package (https://jsr.io/new, scope `@brc-dd`, name `unplugin-deno`) and link the public GitHub
+  repository `brc-dd/unplugin-deno` in its Settings tab (JSR links only public repositories). `deno publish` in the
+  workflow then authenticates with OIDC (no secret) and adds provenance.
 
 ### Publishing by hand
 
@@ -310,9 +305,6 @@ one-time password when the account uses 2FA, and `deno publish` opens the browse
   webpack, Rspack and Rsbuild adapters locate unplugin's loader files with `require.resolve` from an installed package
   (`src/hosts/webpack/unplugin-loaders.ts`), so from JSR they fail with `ENGINE_UNAVAILABLE` and a hint to install the
   npm package; the README lists this under Limitations.
-- With the first release: remove the "First release pending" note from `README.md` (and its copy) in a commit to
-  `main` before merging the version pull request, since npm and JSR show the README of the published version; while
-  JSR publishing is off, also drop the `deno add jsr:@brc-dd/unplugin-deno` alternative from "Install".
 
 ## Working as a coding agent here
 

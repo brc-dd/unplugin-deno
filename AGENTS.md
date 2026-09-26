@@ -5,10 +5,10 @@ gives Vite, Rolldown, Rollup, esbuild, webpack, Rspack and Rsbuild Deno's module
 `jsr:`, `npm:`, `https:`, `deno.json` import maps and workspaces, `deno.lock`. It runs on Node.js,
 Deno and Bun, with a vendored `@deno/loader` (wasm) as the default engine and the installed Deno
 CLI as the `deno` engine. The published package is `packages/unplugin-deno` (npm `unplugin-deno`,
-JSR `@brc-dd/unplugin-deno`; nothing is published yet). Status: M1 and most of M2 are implemented
-on all seven hosts; Bun and Farm are inert and `register`/`api` throw. The progress note in
-`docs/plan.md` lists what is open (JSX precompilation, parts of L6 to L9, Windows CI for the
-`deno` engine, the release).
+JSR `@brc-dd/unplugin-deno`; releases are automated, see `docs/contributing.md#release`). Status:
+M1 and most of M2 are implemented on all seven hosts; Bun and Farm are inert and `register`/`api`
+throw. The progress note in `docs/plan.md` lists what is open (JSX precompilation, parts of L6 to
+L9, M3).
 
 Read before writing code:
 
