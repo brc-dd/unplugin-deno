@@ -1,7 +1,6 @@
 packages:
   - packages/*
   - examples/*
-  - bench
 
 # pnpm >= 11 reads project settings from this file only (.npmrc is used for registries and auth).
 # Optional peers (webpack, Rspack, Farm, ...) are installed explicitly as devDependencies when a

@@ -13,7 +13,6 @@
     "typecheck": "pnpm -F unplugin-deno typecheck",
     "jsr:dry-run": "pnpm -F unplugin-deno jsr:dry-run",
     "examples:check": "pnpm build && pnpm -r --filter \"./examples/*\" run check",
-    "bench": "pnpm build && pnpm -F bench run bench",
     "changeset": "changeset",
     "version-packages": "changeset version && pnpm sync-version && pnpm install --lockfile-only",
     "sync-version": "pnpm -F unplugin-deno sync-version",

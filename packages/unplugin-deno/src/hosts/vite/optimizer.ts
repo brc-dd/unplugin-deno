@@ -1,5 +1,5 @@
 /**
- * Vite's dependency optimizer (docs/architecture.md §5.4, §6.1; research/feasibility.md §3).
+ * Vite's dependency optimizer (docs/architecture.md §5.4, §6.1).
  * Prebundled dependencies are keyed on the specifier as written (`npm:kleur@^4`,
  * `jsr:@std/path@^1`, `@std/path`, `https://…`), the key Vite's dependency scanner records, so
  * the imports the scanner found and those met later agree and the optimizer runs once:

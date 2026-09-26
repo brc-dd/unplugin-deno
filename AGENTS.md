@@ -17,7 +17,6 @@ Read before writing code:
 - `docs/contributing.md`: layout, toolchain, code conventions, fixtures, testing, release.
 - `packages/unplugin-deno/src/*/README.md`: the module maps of `config/`, `core/`, `engine/` and
   `hosts/`.
-- `docs/research/`: historical evidence. Never edit it; add new files instead.
 
 Rules for coding agents (from `docs/contributing.md`):
 

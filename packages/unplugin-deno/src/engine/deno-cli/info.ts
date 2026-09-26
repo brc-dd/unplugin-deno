@@ -1,7 +1,7 @@
 /**
  * The data the `deno` engine reads from Deno (docs/architecture.md §4.3): `deno info --json`
  * output, validated by hand-written guards (its format is marked unstable, and format changes broke
- * earlier plugins, research/vite.md), the progress lines on stderr, and remote modules in the
+ * earlier plugins), the progress lines on stderr, and remote modules in the
  * `DENO_DIR` cache.
  *
  * @module

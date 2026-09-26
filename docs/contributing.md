@@ -2,7 +2,7 @@
 
 This document is for contributors and for coding agents working in this repository. Users should read the
 [README](../README.md) instead. Design rationale lives in [architecture.md](architecture.md); the feature plan and
-milestones in [plan.md](plan.md); prior-art research in [research/](research/README.md).
+milestones in [plan.md](plan.md).
 
 ## Repository layout
 
@@ -39,8 +39,7 @@ unplugin-deno/
 │  ├─ deno.json              # JSR manifest (see "Release")
 │  └─ tsdown.config.ts vitest.config.ts tsconfig.json
 ├─ examples/                 # runnable end-user examples, one directory per scenario
-├─ bench/                    # benchmarks against plain npm baselines
-└─ docs/                     # this file, architecture, plan, research
+└─ docs/                     # this file, architecture, plan
 ```
 
 `src/config/`, `src/core/`, `src/engine/` and `src/hosts/` each have a `README.md` with a short module map; keep
@@ -204,7 +203,6 @@ Rsbuild tests production builds of one or more environments; no test starts thei
 - `docs/plan.md`: goals, scope and milestones; only its progress note changes as work lands.
 - `src/{config,core,engine,hosts}/README.md`: one short module map per directory.
 - `.changeset/*.md`: what users see changing, one file per change (see "Release").
-- `docs/research/`: historical; do not edit, add new findings as new files.
 
 ## Release
 

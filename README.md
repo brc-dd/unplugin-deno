@@ -222,7 +222,7 @@ bundler and the plugin from `node_modules`.
 
 ## Comparison
 
-From our research in September 2026 (`@deno/vite-plugin` 2.0.4, `@deno/esbuild-plugin` 1.2.1,
+As of September 2026 (`@deno/vite-plugin` 2.0.4, `@deno/esbuild-plugin` 1.2.1,
 `@luca/esbuild-deno-loader` 0.11.1):
 
 - Each of them supports one bundler, and the two esbuild plugins run only under Deno.

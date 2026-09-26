@@ -76,7 +76,7 @@ const REMOTE_URL = /^(https?:\/\/|data:)/
 /**
  * Makes the dev server's import analysis resolve `https:` and `data:` imports through plugins
  * (it skips URLs no alias matches). The replacement is the match itself (`'$&'` breaks Vite 8
- * builds, research/feasibility.md §5); the alias is only needed, and added, in the dev server.
+ * builds); the alias is only needed, and added, in the dev server.
  */
 export const REMOTE_ALIAS: Alias = { find: REMOTE_URL, replacement: '$1' }
 

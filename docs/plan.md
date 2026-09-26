@@ -41,9 +41,13 @@ engine now passes it as a `file:` URL. The JSR dry run passes and is a required 
 7. Documented in the README and `examples/esbuild-browser`: `cacheDir` when `config` points into a subdirectory.
 8. Done: `"prepare": "tsdown"` builds `dist/` after a fresh clone.
 
-The plan is derived from the research reports in [`research/`](research/README.md) (about 5,100 lines, six parallel
-research passes over 30+ prior-art packages, the bundlers' current APIs, Deno 2.5–2.9 release notes, framework
-integrations and ~1,500 issues). Shorthand for issue references is in [research/README.md](research/README.md).
+The plan is derived from a survey of 30+ prior-art packages, the bundlers' current APIs, Deno 2.5–2.9 release notes,
+framework integrations and about 1,500 issues (September 2026). Issue shorthand: `dvp#` = denoland/deno-vite-plugin,
+`fresh#` = freshframework/fresh, `deno#` = denoland/deno, `deno-js-loader#` = denoland/deno-js-loader,
+`esbuild_deno_loader#` = lucacasonato/esbuild_deno_loader, `deno-rolldown-plugin#` = denoland/deno-rolldown-plugin,
+`rolldown#` = rolldown/rolldown, `rspack#` = web-infra-dev/rspack, `vite#` = vitejs/vite, `jsr#` = jsr-io/jsr,
+`unplugin#` = unjs/unplugin, `nitro#` = nitrojs/nitro, `kit#` = sveltejs/kit, `solid-start#` = solidjs/solid-start,
+`qwik#` = QwikDev/qwik, `deno-astro-adapter#` = denoland/deno-astro-adapter.
 How the design is realised in code is in [architecture.md](architecture.md).
 
 ---
@@ -67,7 +71,7 @@ How the design is realised in code is in [architecture.md](architecture.md).
   real files the dev server can prebundle).
 
 Names: npm `unplugin-deno` (claimed), JSR `@brc-dd/unplugin-deno`. Not affiliated with Deno Land Inc.; nominative use
-of "Deno" only, no logo (research: frameworks-and-demand.md §7).
+of "Deno" only, no logo.
 
 Non-goals (v1): re-implementing a bundler; replacing `deno bundle`; type-checking; running npm lifecycle scripts
 ourselves (we tell the user to run `deno install`, or do it through the optional Deno CLI engine).
@@ -79,7 +83,7 @@ ourselves (we tell the user to run `deno install`, or do it through the optional
 1. **Every surviving plugin converged on `@deno/loader`** (Deno's Rust resolver/graph/npm-installer/transpiler as a
    5.5 MB wasm): `@deno/vite-plugin` 2.x, `@deno/esbuild-plugin`, `@deno/rolldown-plugin`, Fresh 2's internal plugin,
    Lume. Plugins that shell out to `deno info` per import are the source of the OOM (>8 GB), "10× slower" and
-   "output format changed" complaints. (frameworks-and-demand.md §6, §8; vite.md; esbuild.md)
+   "output format changed" complaints.
 2. **`@deno/loader` runs on Node and Bun since 0.4.0 (2026-03)** and returns source maps since 0.5.0.
    `@deno/vite-plugin` 2.0.4 already uses 0.5 and builds under Node; `@deno/esbuild-plugin` and
    `@deno/rolldown-plugin` still pin 0.3 and are Deno-only. The loader is JSR-only (`npm i` fails without an `.npmrc`
@@ -91,52 +95,47 @@ ourselves (we tell the user to run `deno install`, or do it through the optional
    newestDependencyDate, platform: 'node'|'browser', cachedOnly, debug, preserveJsx, noTranspile})` →
    `Loader{addEntrypoints, resolveSync, resolve, load, getGraphUnstable}`. There is no `cwd`, `nodeModulesDir`,
    `vendor`, `lockfile` or `frozen` option; those come from `deno.json` or must be plugin logic.
-   (multi-and-deno-tooling.md §1; feasibility review)
 3. **The official plugins have correctness bugs users hit daily** (about ten reproduced with Vite 8.3.1 / esbuild
    0.28.2): `npm:pkg@x/subpath` loses the subpath (fix pending in dvp PR #98); `virtual:` and `\0` ids of other
    plugins crash the build; `node_modules` silently beats the import map; import attributes ignored (`with
    {type:"text"}` of a `.json` returns an object); `data:` imports fail; deno.json found from `process.cwd()` instead
    of `absWorkingDir` (issue-reported); workspace members outside the Vite root get no HMR; JSR modules never
-   prebundle in dev (~30 requests for `@std/path`). (vite.md; esbuild.md)
+   prebundle in dev (~30 requests for `@std/path`).
 4. **Letting the host's own resolver handle npm packages matters**: `lodash-es` `chunk` bundles to 10.4 KB when
    esbuild resolves through a real `node_modules` vs 321.9 KB when the plugin loads npm files itself (loses
-   `sideEffects`/`browser`/conditions); the feasibility review measured 2.4 KB vs 83.0 KB on Rolldown. (esbuild.md;
-   feasibility review)
+   `sideEffects`/`browser`/conditions); 2.4 KB vs 83.0 KB on Rolldown.
 5. **unplugin's generic hooks are not enough for a resolver plugin** (unplugin 3.4.0, verified): on **webpack**
    `resolveId` never sees `jsr:`/`npm:`/`https:` (scheme requests bypass the resolver → `UnhandledSchemeError`);
    on **webpack/Rspack** `{external: true}` is silently ignored and virtual modules get a wrong importer; on
    **esbuild** unplugin registers its own catch-all `onResolve(/.*/)` *before* the `esbuild.setup` escape hatch and
    puts every resolved id into the plugin namespace; `rspack(compiler)` is never called under Rsbuild. Working
-   native recipes exist for each. (ecosystem.md §A.6, §K; rolldown-rollup-rspack-webpack.md; feasibility review)
+   native recipes exist for each.
 6. **Vite 8 dev ≠ build**: dev import-analysis skips `https://` and `data:` specifiers unless a `resolve.alias`
    matches; dev never transpiles TS for `\0` ids and ignores `moduleType`; the optimizer and SSR externalisation
    only recognise paths containing `node_modules`, so Deno's global cache is neither optimised nor externalised;
    `optimizeDeps.include` is resolved without user plugins, so `jsr:`/`npm:`/virtual entries fail there.
-   (ecosystem.md §B.3; feasibility review)
 7. **Rolldown (and thus Vite 8) does not pass import attributes to `resolveId` and dedupes `text`/`bytes` imports
    of the same id** (rolldown#2758, on their Q3 plan). Rollup exposes attributes but also reuses the first
    resolution for the same id; esbuild, webpack and Rspack key modules per attribute. Bun's `onResolve` has no
-   `with`. (ecosystem.md §0.2, §K)
+   `with`.
 8. **`resolvedBy` is never set by Vite 7/8 or Rolldown** (only Rollup), so Fresh's "let other plugins answer, ignore
    Vite's resolver" trick is a no-op there; the import map must be authoritative for its keys instead. Rolldown has
-   no `importerId` filter in unplugin's typed API (only through its escape hatch). (feasibility review; ecosystem.md)
+   no `importerId` filter in unplugin's typed API (only through its escape hatch).
 9. **webpack ≥5.102 `target:"web"` and 5.108's `target:"deno"` externalise `jsr:`/`npm:`/`https:` before any
    resolver runs**; `target:"deno"` also gives correct `import.meta.main`, the `deno` condition, and (unlike Deno)
    the `browser` condition. Both webpack and Rspack externalise `http(s):` for web targets by default.
-   (rolldown-rollup-rspack-webpack.md §6; ecosystem.md §G)
 10. **Deno 2.8.3 added `deno info --json` → `npmPackages[*].localPath` explicitly for bundler plugins; Deno 2.9
     added `jsrDepsInNodeModules`** (installs `jsr:` deps into `node_modules/@jsr/…` with symlinks; its import-map
     subpath handling is broken on 2.9.7) and stable `links`; 2.8 made `with {type:"text"}` stable (`bytes` still
     unstable) and implemented `node:module.registerHooks()`. Open PR denoland/deno#34345 moves `deno bundle` to
-    Rolldown and adds a `Deno.bundle({plugins})` API. (multi-and-deno-tooling.md §6; ecosystem.md §I)
+    Rolldown and adds a `Deno.bundle({plugins})` API.
 11. **SSR is half the product.** The largest pain cluster (~30 issues) is server builds: CJS/native npm packages
     break when bundled, and users cannot hand `npm:`/`jsr:` back to Deno to load at runtime. Deno Deploy runs
     **every** build through Deno-shimmed `node`/`npm` (so "the build runs on Deno" says nothing about the output
     platform) and runs apps with `--cached-only`, so externals must be static and pinned.
-    (frameworks-and-demand.md §2.5, §3, §8)
 12. **Nobody supports `jsx: "precompile"` outside Deno** (Oxc/SWC/esbuild don't); `@deno/loader` and
     `deno transpile` do. All major bundlers run under Deno 2.9.7 (Rolldown needs `--allow-env --allow-read
-    --allow-ffi`); Vite 8 needs Deno ≥ 2.7 (`util.parseEnv`). (ecosystem.md §0.2, §J; frameworks-and-demand.md)
+    --allow-ffi`); Vite 8 needs Deno ≥ 2.7 (`util.parseEnv`).
 13. Verified versions (2026-09-25): unplugin 3.4.0 (ESM-only, Bun + Rsbuild + `unloader` targets, RegExp-only
     `resolveId` filter), Vite 8.3.1 (Rolldown/Oxc default), Rolldown 1.2.11, tsdown 0.23.0, Rollup 4.63.5,
     esbuild 0.28.2, Rspack 2.2.7 / Rsbuild 2.2.9, webpack 5.111.1, Farm 1.7.11 (stale), TypeScript 7.0.2 (tsdown's
@@ -166,7 +165,7 @@ ourselves (we tell the user to run `deno install`, or do it through the optional
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Key decisions (all confirmed by the feasibility review unless marked experimental):
+Key decisions:
 
 - **Import map is authoritative for its keys.** A mapped bare specifier is mapped by us first, then the *mapped
   target* is resolved (a path is handed to the host; `npm:` goes through the npm strategy; `jsr:`/`https:` through
@@ -200,7 +199,7 @@ Priority: **P0** = first release (M1), **P1** = M2, **P2** = M3, **P3** = explor
 | # | Feature | Pri | Evidence / notes | Today |
 |---|---|---|---|---|
 | R1 | `jsr:` (ranges → lockfile-pinned version, exports map, subpaths), `npm:` (ranges, **subpaths kept**, peer/optional deps, CJS), `https:`/`http:` (redirects, lockfile integrity), `node:`, `data:`, `file:`, `bun:`/`cloudflare:` external | P0 | dvp PR #98 (subpath); `data:` fails in `@deno/esbuild-plugin` | partial everywhere |
-| R2 | Import map: `imports`, `scopes`, package-with-subpath expansion, importer-relative (which member's map applies), **import map authoritative over `node_modules` and native resolvers** | P0 | deno#33787; vite.md "import-map entries lose to node_modules" | Fresh (Vite 7 build only) |
+| R2 | Import map: `imports`, `scopes`, package-with-subpath expansion, importer-relative (which member's map applies), **import map authoritative over `node_modules` and native resolvers** | P0 | deno#33787; import-map entries lose to same-named `node_modules` packages in `@deno/vite-plugin` | Fresh (Vite 7 build only) |
 | R3 | Workspaces: root + members **including globs**, member-scoped import maps, `links` (stable in 2.9), members outside the bundler root, several dev servers at once. Member discovery is done by our config layer because the vendored loader lacks glob members and link globs | P0 | deno#26721 (+16), fresh#3805, vite#22237 | broken/partial |
 | R4 | `nodeModulesDir` `auto`/`manual`/`none`, hoisted vs isolated linker, BYONM; `package.json` deps alongside `deno.json`; `DENO_NO_PACKAGE_JSON` | P0 | deno#26091 | partial |
 | R5 | `deno.lock` v5 honoured; `lockfile: 'auto' \| 'frozen' \| 'off'` implemented by the plugin (compare resolved versions against the lock; frozen fails on drift; default `frozen` when `CI=true`) | P0/P1 | deno#16105 (+39) | implicit only |
@@ -210,27 +209,27 @@ Priority: **P0** = first release (M1), **P1** = M2, **P2** = M3, **P3** = explor
 | R9 | Workers (`new Worker(new URL(…, import.meta.url))`, Vite `?worker` incl. adding ourselves to `worker.plugins`) and dynamic `import()` sub-graphs go through the same resolver | P1 | dvp#106 | open bugs everywhere |
 | R10 | Private registries: `.npmrc` scoped registries + auth, `DENO_AUTH_TOKENS`, `JSR_URL`, `NPM_CONFIG_REGISTRY`, proxies/`DENO_CERT`, injected `fetch` (the loader reads `globalThis.fetch` at call time) | P1 | deno#16105, esbuild_deno_loader#55 | loader inherits some |
 | R11 | Deno 2.9 `jsrDepsInNodeModules` awareness: when `node_modules/@jsr/…` exists, use it as the npm route (one JSR route per build: never mix `@jsr/*` npm-compat packages and `jsr.io` sources) | P1 | multi §6.6 | none |
-| R12 | Duplicate-instance detection: `npm:x`, bare `x`, JSR-transitive npm deps and prebundled copies collapse to one module; warn on duplicate framework copies | P1 | vite.md preact `.module.js` vs `.mjs` | none |
+| R12 | Duplicate-instance detection: `npm:x`, bare `x`, JSR-transitive npm deps and prebundled copies collapse to one module; warn on duplicate framework copies | P1 | preact resolved to `.module.js` by Vite and `.mjs` by Deno | none |
 | R13 | Offline (`cachedOnly`) mode with a clear "run `deno install`/`deno cache`" error; note the loader's `cachedOnly` only covers remote modules | P1 | fresh#3467 | poor errors |
-| R14 | Minimum-dependency-age parity: pass Deno's setting (default 24 h in 2.9) as `newestDependencyDate` so versions match `deno install` when there is no lockfile | P0 | multi §1.5, vite.md | none |
+| R14 | Minimum-dependency-age parity: pass Deno's setting (default 24 h in 2.9) as `newestDependencyDate` so versions match `deno install` when there is no lockfile | P0 | the loader ignores the minimum dependency age | none |
 | R15 | Remote-import allow-list mirroring `--allow-import` (Deno's default hosts) with an option to extend; clear error for disallowed hosts | P1 | rolldown#1768, webpack buildHttp `allowedUris` | webpack buildHttp |
-| R16 | One engine workspace per config scope (nearest `deno.json` of the importer) for imports from outside the workspace | P2 | vite.md (`@str4ngemd` fork) | `@str4ngemd` fork |
+| R16 | One engine workspace per config scope (nearest `deno.json` of the importer) for imports from outside the workspace | P2 | the `@str4ngemd` fork of `@deno/vite-plugin` | `@str4ngemd` fork |
 
 ### 4.2 Loading and transforms
 
 | # | Feature | Pri | Notes | Today |
 |---|---|---|---|---|
 | L1 | Local files handed to the host as paths (native TS/JSX, HMR, sourcemaps) | P0 | avoids the loader's stale-file bug | `@deno/vite-plugin` partially |
-| L2 | Remote/JSR modules mirrored as real files, pre-transpiled by the engine, with **readable sourcemaps** (`sources` = URL) and **reproducible ids** (no DENO_DIR or cwd paths in output/chunk names) | P0 | loader 0.5 `sourceMap`; T12 (~11 issues); rrrw reproducibility | none |
-| L3 | **Import attributes on every bundler**: `with { type: "text" \| "bytes" }` (and `"css"` → `CSSStyleSheet` module like Deno 2.9) encoded as `?deno-type=`; `json` left to the host; native detection where available, `transform` pre-pass (static + dynamic imports) on Rolldown/Vite | P0 | rolldown#2758; esbuild.md test failures; Rollup dedupe | none correct on Rolldown/Vite |
-| L4 | `moduleType`/loader from Deno media type where the host accepts it (Rolldown, Vite build, esbuild, Bun); mirrored code is JS so Vite-dev's `\0`/TS limitation does not apply | P0 | ecosystem.md §B.3 | `@lulu/deno-rolldown-plugin` (moduleType) |
+| L2 | Remote/JSR modules mirrored as real files, pre-transpiled by the engine, with **readable sourcemaps** (`sources` = URL) and **reproducible ids** (no DENO_DIR or cwd paths in output/chunk names) | P0 | loader 0.5 `sourceMap`; T12 (~11 issues); reproducible output | none |
+| L3 | **Import attributes on every bundler**: `with { type: "text" \| "bytes" }` (and `"css"` → `CSSStyleSheet` module like Deno 2.9) encoded as `?deno-type=`; `json` left to the host; native detection where available, `transform` pre-pass (static + dynamic imports) on Rolldown/Vite | P0 | rolldown#2758; `@deno/esbuild-plugin` ignores attributes; Rollup dedupe | none correct on Rolldown/Vite |
+| L4 | `moduleType`/loader from Deno media type where the host accepts it (Rolldown, Vite build, esbuild, Bun); mirrored code is JS so Vite-dev's `\0`/TS limitation does not apply | P0 | Vite dev ignores `moduleType` | `@lulu/deno-rolldown-plugin` (moduleType) |
 | L5 | JSX per deno.json for local **and remote** modules: local via host transpiler with `jsxImportSource` resolved through the import map; remote via the engine (per-package settings, incl. `precompile`) | P0 (automatic) / P1 (`precompile` for local files via `jsx: 'deno'`) | jsr#24 (+21), deno#30080 | Fresh (Babel, Preact-only) |
 | L6 | Wasm: `.wasm` module imports → JS instantiate wrapper (like `deno bundle`), source-phase imports where the host supports them | P1 | fresh#3897 (`.wasm` from `jsr:@deno/doc`) | `deno bundle` |
 | L7 | `import.meta.main` → `false` in non-entry modules (entry keeps it); `import.meta.filename/dirname` handling for browser | P1 | deno-rolldown-plugin#15 | webpack `target:deno`, `deno bundle` |
 | L8 | CJS correctness when bundling npm for Deno/Node targets (node-mode `__toESM`, `createRequire` shim for esbuild; Rolldown module-format hint) | P1 | deno#34524/#34837; Fresh's CJS transform | `deno bundle` hacks |
 | L9 | Env inlining: `Deno.env.get("PUBLIC_X")`, `process.env.X`, `import.meta.env.X` behind a prefix/allow-list, loaded from `.env`/process; DCE-friendly constants (`IS_BROWSER`) | P1 | deno#30639 (+9) | Fresh (Preact-specific), `@deno/esbuild-plugin` `publicEnvVarPrefix` |
 | L10 | `Deno` global in browser bundles: `denoGlobals: 'error' \| 'warn' \| 'off'` (users asked for errors/warnings, not a shim) | P1 | T10 | none |
-| L11 | Sourcemap/path hygiene: `sources` as URLs for remote, project-relative for mirror files; strip the loader's inline `sourceMappingURL` comment; no absolute cache paths in emitted output | P0 | rrrw §reproducibility | none |
+| L11 | Sourcemap/path hygiene: `sources` as URLs for remote, project-relative for mirror files; strip the loader's inline `sourceMappingURL` comment; no absolute cache paths in emitted output | P0 | reproducible output | none |
 
 ### 4.3 Deno server-output mode (SSR / `deno run` / Deno Deploy)
 
@@ -241,7 +240,7 @@ Priority: **P0** = first release (M1), **P1** = M2, **P2** = M3, **P3** = explor
 | S3 | Emit a sidecar `deno.json` (`imports` pinned to what was externalised) and a trimmed `deno.lock` next to the output so it runs with `deno run --cached-only` (design inference; validated by an integration test that runs the output under Deno) | P1 | Deploy constraints | none |
 | S4 | Vite SSR integration: add `deno` to server `resolve.conditions`/`externalConditions`; **experimental** `resolve.builtins` for `/^npm:/`, `/^jsr:/` when the dev server runs under Deno so `ssrLoadModule` loads them natively; never force `noExternal: true` | P1 | dvp#54/#56, deno#26492, vite#20828/#20850 | Fresh forces globals |
 | S5 | Native-addon (`.node`) and CJS-only detection with warnings and a suggested `external` | P1 | fresh#3323/#3362 | none |
-| S6 | webpack `target: 'deno'` / Rspack: respect or override the built-in externalisation loudly (option), never silently | P1 | ecosystem.md §G | webpack silently externalises |
+| S6 | webpack `target: 'deno'` / Rspack: respect or override the built-in externalisation loudly (option), never silently | P1 | webpack 5.108 `target: "deno"` | webpack silently externalises |
 | S7 | deno.json-only projects in frameworks: synthesise the `noExternal`/`optimizeDeps.include` lists frameworks derive from `package.json` (vitefu) | P2 | deno-astro-adapter#67, kit#14555, solid-start#1990, qwik#8616 | none |
 
 ### 4.4 Dev-server (Vite) specifics
@@ -366,7 +365,7 @@ deno.json-only projects. Options that the engine cannot express (`lockfile`, `np
 
 ## 7. Testing strategy
 
-- **Fixture matrix** (from the demand-driven acceptance matrix, frameworks-and-demand.md §8): Vite SPA with
+- **Fixture matrix**: Vite SPA with
   `jsr:`+`npm:`+aliases and no package.json; the three `nodeModulesDir` modes + hoisted linker; workspace with globs and
   `links`, two dev servers; `react → npm:preact/compat` alias under Rolldown; `?raw`/`?url`/`?worker` through aliases,
   worker importing JSR, `.wasm` from JSR; Astro/Solid `virtual:` modules + Tailwind v4 + Sass aliases; SSR build
@@ -394,7 +393,7 @@ deno.json-only projects. Options that the engine cannot express (`lockfile`, `np
   a `scripts/vendor-loader.ts` to re-vendor from JSR (tracks denoland/deno-js-loader; #86 requests a refresh).
 - Publish to **npm** (`unplugin-deno`) and **JSR** (`@brc-dd/unplugin-deno`). Peer deps: none required (bundlers as
   optional peers).
-- pnpm workspace: `packages/unplugin-deno`, `examples/*`, `bench/`. Lint/format: oxlint + oxfmt; changesets; GitHub
+- pnpm workspace: `packages/unplugin-deno`, `examples/*`. Lint/format: oxlint + oxfmt; changesets; GitHub
   Actions matrix above.
 
 ---
@@ -431,7 +430,7 @@ across two bundler majors.
 6. Remote modules: real files in a project-local mirror (not virtual ids) — for prebundling, host-native loading on
    webpack/Rspack, readable/reproducible output and the register hook.
 7. Support floor: Vite 7 + 8, Rollup ≥ 4.40, Rolldown ≥ 1.0, esbuild ≥ 0.25, Node ≥ 22.12, Deno ≥ 2.7, Bun ≥ 1.3.
-8. Repo: pnpm monorepo with `examples/` and `bench/`. JSR name `@brc-dd/unplugin-deno`.
+8. Repo: pnpm monorepo with `examples/`. JSR name `@brc-dd/unplugin-deno`.
 
 ---
 

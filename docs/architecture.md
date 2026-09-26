@@ -2,8 +2,7 @@
 
 This is the developer specification of `unplugin-deno`: what each layer does, the algorithms, the id and file
 layouts, and the per-host recipes. It is written for contributors and coding agents; users read the
-[README](../README.md). Rationale and evidence are in [plan.md](plan.md) and [research/](research/README.md);
-the verified host recipes referenced below are in [research/feasibility.md](research/feasibility.md).
+[README](../README.md). Rationale is in [plan.md](plan.md).
 
 The text describes the implementation after the M2 work on the P0/P1 set, verified with Deno 2.9.7, Vite 8.3.1 and
 7.3.6, Rolldown 1.2.11, Rollup 4.63.5, esbuild 0.28.2, webpack 5.111.1, Rspack 2.2.7 and Rsbuild 2.2.9. What is not
@@ -323,7 +322,7 @@ run is skipped when no Deno 2.8.3+ is found); the `engine-cli-*` fixtures cover 
 
 ### 4.2 `loader` engine (vendored `@deno/loader` 0.5.0)
 
-Facts that drive the implementation (verified; see research/feasibility.md §7 and multi-and-deno-tooling.md §1):
+Facts that drive the implementation (verified against @deno/loader 0.5.0):
 
 - Construction: `new Workspace({ configPath | noConfig, noLock, platform, nodeConditions, cachedOnly,
   newestDependencyDate, preserveJsx: false, noTranspile: false })`, then `await workspace.createLoader()`. **Always
@@ -1153,7 +1152,7 @@ for types only, so other hosts never load it; the version comes from `this.meta.
   unless the `platform` option is set. `examples/tsdown-lib` (tsdown 0.23, run by the CI examples job) builds a Deno
   output and a browser output; the package's own suite has no tsdown test.
 - Optional, not done: an `order: 'post'` terminator with a `custom` probe to detect whether another plugin resolved a
-  mapped key first (research/feasibility.md §2).
+  mapped key first.
 
 ### 6.3 Rollup 4 (≥ 4.40 for native filters)
 

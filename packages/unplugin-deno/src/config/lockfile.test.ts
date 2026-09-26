@@ -58,7 +58,7 @@ const WORKSPACE_LOCK = {
   },
 }
 
-/** The sample from docs/research/multi-and-deno-tooling.md §6.4 (hashes shortened there). */
+/** A `deno.lock` v5 sample written by Deno 2.9 (hashes shortened). */
 const RESEARCH_SAMPLE = `{
   "version": "5",
   "specifiers": { "jsr:@std/internal@^1.0.14": "1.0.14", "jsr:@std/path@1": "1.1.6", "npm:kleur@4": "4.1.5" },
