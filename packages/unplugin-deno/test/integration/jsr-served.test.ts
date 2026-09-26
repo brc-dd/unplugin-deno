@@ -115,8 +115,10 @@ describe.skipIf(runtime !== 'deno' || !built)(
         }
         expect(result.length).toBeGreaterThan(500)
         expect(result.imports.filter((id) => /^(?:jsr|npm|https?):/.test(id))).toEqual([])
-        expect(result.moduleIds.some((id) => id.includes('jsr.io/@std/path'))).toBe(true)
-        expect(result.moduleIds.some((id) => /kleur/.test(id))).toBe(true)
+        // Module ids are OS paths (mirror files under node_modules/.unplugin-deno); `\` on Windows.
+        const moduleIds = result.moduleIds.map((id) => id.replaceAll('\\', '/'))
+        expect(moduleIds.some((id) => id.includes('jsr.io/@std/path'))).toBe(true)
+        expect(moduleIds.some((id) => /kleur/.test(id))).toBe(true)
         // The host entry, its shared chunks and the vendored loader (with the wasm) came over HTTP.
         expect(server.requests).toContain('/dist/rolldown.js')
         expect(server.requests.some((path) => /^\/dist\/plugin-.*\.js$/.test(path))).toBe(true)
