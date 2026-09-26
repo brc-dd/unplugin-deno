@@ -147,7 +147,9 @@ Rsbuild tests production builds of one or more environments; no test starts thei
 `src/engine/contract.test.ts` runs the `engine-*` fixtures against both engines (the
 `deno` engine's run needs a Deno binary, below), `src/engine/deno-cli/engine.test.ts` the `engine-cli-*` fixtures, and
 `src/config/import-map.wpt.test.ts` the data in `test/data/`. The whole suite runs under Node (`pnpm test`), Deno
-(`pnpm test:deno`) and Bun (`pnpm test:bun`), and CI runs each on Linux, macOS and Windows.
+(`pnpm test:deno`) and Bun (`pnpm test:bun`), and CI runs each on Linux, macOS and Windows. Keep vitest's default
+`forks` pool: under Deno the `threads` pool hangs. Deno's `node:child_process` shim sometimes throws "IPC channel is
+already disconnected" while vitest tears its workers down, after every test passed, so CI retries the Deno rows once.
 
 ## Testing expectations
 

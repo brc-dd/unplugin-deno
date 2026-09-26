@@ -64,7 +64,16 @@ jobs:
           path: ${{ runner.temp }}/unplugin-deno-deno-dir
           key: deno-dir-${{ runner.os }}-${{ hashFiles('packages/unplugin-deno/test/fixtures/**/deno.lock') }}
           restore-keys: deno-dir-${{ runner.os }}-
-      - run: pnpm ${{ env.TEST_SCRIPT }}
+      # Under Deno, vitest's forked workers occasionally make Deno's node:child_process shim throw
+      # "IPC channel is already disconnected" while tearing down, after every test has passed; the
+      # run then exits non-zero. One retry covers that race (Node and Bun runs get none).
+      - run: |
+          if [ "${{ matrix.runtime }}" = "deno" ]; then
+            pnpm ${{ env.TEST_SCRIPT }} || { echo "::warning::retrying pnpm ${{ env.TEST_SCRIPT }} once"; pnpm ${{ env.TEST_SCRIPT }}; }
+          else
+            pnpm ${{ env.TEST_SCRIPT }}
+          fi
+        shell: bash
         env:
           UNPLUGIN_DENO_TEST_DENO_DIR: ${{ runner.temp }}/unplugin-deno-deno-dir
 
