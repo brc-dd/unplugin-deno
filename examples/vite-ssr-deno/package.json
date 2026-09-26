@@ -1,0 +1,15 @@
+{
+  "name": "vite-ssr-deno",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "deno run -A --watch src/server.ts",
+    "build": "vite build",
+    "start": "deno run -A --cached-only dist/server.js",
+    "check": "node scripts/check.ts"
+  },
+  "devDependencies": {
+    "unplugin-deno": "workspace:*",
+    "vite": "^8.3.1"
+  }
+}

@@ -90,3 +90,37 @@ jobs:
       - name: JSR dry run
         continue-on-error: true
         run: pnpm jsr:dry-run
+
+  examples:
+    name: Examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      # The check scripts run the examples' output under Deno.
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      # The examples download their jsr:, npm: and https: modules into this DENO_DIR once. (Before
+      # `pnpm install`, so the key hashes only the examples' own lockfiles.)
+      - name: Cache the examples' DENO_DIR
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/unplugin-deno-examples-deno-dir
+          key: examples-deno-dir-${{ runner.os }}-${{ hashFiles('examples/**/deno.lock') }}
+          restore-keys: examples-deno-dir-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm -r --filter './examples/*' run check
+        env:
+          DENO_DIR: ${{ runner.temp }}/unplugin-deno-examples-deno-dir

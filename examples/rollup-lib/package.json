@@ -1,0 +1,14 @@
+{
+  "name": "rollup-lib",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "rollup -c rollup.config.ts",
+    "check": "node scripts/check.ts"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "rollup": "^4.63.5",
+    "unplugin-deno": "workspace:*"
+  }
+}

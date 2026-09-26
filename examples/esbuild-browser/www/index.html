@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markdown preview</title>
+    <style>
+      body {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin: 2rem;
+        font-family: system-ui, sans-serif;
+      }
+      textarea {
+        min-height: 20rem;
+        font:
+          1rem/1.5 ui-monospace,
+          monospace;
+      }
+    </style>
+    <script type="module" src="/js/main.js"></script>
+  </head>
+  <body>
+    <textarea id="editor">
+# Hello, Markdown
+
+Type on the left, read on the right. Headings get an **id** you can link to.
+
+## A list
+
+- `jsr:@std/fmt` estimates the reading time
+- `npm:marked` renders the Markdown
+- `https://deno.land/std` makes the heading ids</textarea>
+    <article>
+      <p>Reading time: <span id="reading-time"></span></p>
+      <div id="preview"></div>
+    </article>
+  </body>
+</html>

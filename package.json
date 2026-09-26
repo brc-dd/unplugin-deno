@@ -12,6 +12,8 @@
     "fmt:check": "oxfmt --check",
     "typecheck": "pnpm -F unplugin-deno typecheck",
     "jsr:dry-run": "pnpm -F unplugin-deno jsr:dry-run",
+    "examples:check": "pnpm build && pnpm -r --filter \"./examples/*\" run check",
+    "bench": "pnpm build && pnpm -F bench run bench",
     "changeset": "changeset",
     "release": "node -e \"console.error('release: not set up yet, see docs/contributing.md#release'); process.exit(1)\""
   },

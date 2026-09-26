@@ -728,7 +728,7 @@ describe('esbuild-abs-working-dir', () => {
       {
         platform: 'browser',
         stdin: {
-          contents: "export { message } from '#message'\nexport { join } from '@std/path'\n",
+          contents: "export { message } from '#message'\nexport { join } from '@std/path/posix'\n",
           resolveDir: project.root,
           loader: 'ts',
         },

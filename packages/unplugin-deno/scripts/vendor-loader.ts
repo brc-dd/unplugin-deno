@@ -94,6 +94,12 @@ function modJsPatches(): Patch[] {
       find: /\n\/\/# sourceMappingURL=mod\.js\.map\s*$/,
       replace: '\n',
     },
+    {
+      description:
+        'Point Deno at the declarations with `@ts-self-types` (JSR type-checks the published dist).',
+      find: /^/,
+      replace: '// @ts-self-types="./mod.d.ts"\n',
+    },
   ]
 }
 

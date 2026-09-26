@@ -1,0 +1,15 @@
+{
+  "name": "esbuild-browser",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node build.ts --serve",
+    "build": "node build.ts",
+    "start": "deno run --allow-net --allow-read --allow-env=PORT serve.ts",
+    "check": "node scripts/check.ts"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "unplugin-deno": "workspace:*"
+  }
+}

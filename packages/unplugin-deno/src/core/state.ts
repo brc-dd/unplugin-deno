@@ -138,8 +138,8 @@ export class PluginState implements ResolverState, InvalidationTarget {
   readonly flavor: PathFlavor = HOST_PATH_FLAVOR
   options: ResolvedOptions
   /**
-   * Set by adapters whose host resolves every import with its attributes (esbuild's `args.with`,
-   * next phase): the transform pre-pass is then not needed (§5.5). Rollup does not set it: it
+   * Set by adapters whose host resolves every import with its attributes (esbuild's `args.with`):
+   * the transform pre-pass is then not needed (§5.5). Rollup does not set it: it
    * resolves each specifier once per module whatever its attributes (§5.9).
    */
   nativeAttributes = false

@@ -78,7 +78,7 @@ export interface Options {
    */
   engine?: 'auto' | 'loader' | 'deno'
   /**
-   * Deno executable used by the `deno` engine.
+   * Deno executable used by the `deno` engine (planned; the engine is not implemented yet).
    * @default 'deno' (looked up on `PATH`)
    */
   denoBinary?: string
@@ -99,7 +99,7 @@ export interface Options {
   conditions?: string[]
   /**
    * Where npm packages are loaded from: the project's `node_modules` (resolved by the host),
-   * Deno's global npm cache, or `'auto'` (`node_modules` when a layout exists).
+   * Deno's global npm cache, or `'auto'` (`node_modules` unless `nodeModulesDir` is `"none"`).
    * @default 'auto'
    */
   npm?: 'auto' | 'node_modules' | 'deno-cache'
@@ -119,6 +119,8 @@ export interface Options {
    * `DEFAULT_ALLOW_IMPORT` to extend it.
    * @default Deno's `--allow-import` defaults (`deno.land`, `jsr.io`, `esm.sh`, `cdn.jsdelivr.net`,
    *   `raw.githubusercontent.com`, `gist.githubusercontent.com`)
+   *
+   * Planned: not enforced yet.
    */
   allowImport?: string[]
   /**
@@ -183,6 +185,9 @@ export interface Options {
    * Who transforms JSX in local files: the host (`'host'`), the engine per `deno.json`
    * (`'deno'`, supports `precompile`), or `'auto'` (host for local files, engine for remote ones).
    * @default 'auto'
+   *
+   * Planned: `'deno'` (transpiling local files through the engine, e.g. `jsx: "precompile"`) has no
+   * effect yet; local files are always transpiled by the host, remote modules by the engine.
    */
   jsx?: 'auto' | 'host' | 'deno'
 

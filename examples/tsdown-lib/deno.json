@@ -1,0 +1,10 @@
+{
+  "name": "@example/humanize",
+  "version": "0.1.0",
+  "exports": "./src/mod.ts",
+  "nodeModulesDir": "none",
+  "imports": {
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "ms": "npm:ms@^2"
+  }
+}

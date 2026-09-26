@@ -3,6 +3,34 @@
 Status: **approved 2026-09-25** (revision 2, after a fact-check against the research and a feasibility review of the
 core mechanisms against the real sources). Milestones M0–M3 below are the work plan; M1 is the first target.
 
+**Progress (2026-09-26).** M0 is done. M1 is implemented: the config layer, the `loader` engine, the core plugin and
+the Vite 8/7, Rolldown, Rollup and esbuild adapters; [architecture.md](architecture.md) describes the code, and its
+[Appendix A](architecture.md#appendix-a-deviations-from-planmd) lists where it departs from sections 3–6 below. Still
+open for M1: "Windows green" (CI), the release workflow and the first publish (npm and JSR, see
+[contributing.md](contributing.md#release)), the D8 docs, and from the P0 list the `jsrDepsInNodeModules` route of
+D2, R6's `browser: false` mappings for packages from Deno's global cache, and P2's Deno Deploy and `deno desktop`
+checks. The examples and the benchmark are in [`examples/`](../examples) and [`bench/`](../bench). Next: M2 (the P1
+set), starting with the follow-ups below.
+
+**Follow-ups found by the examples (2026-09-26), for M2:**
+
+1. `compilerOptions.jsx`/`jsxImportSource` from `deno.json` are not applied to local JSX on any host yet (L5): map
+   them onto Vite `oxc.jsx`/`esbuild.jsx*`, Rolldown `transform.jsx`, esbuild `jsx`/`jsxImportSource`, Rollup `jsx`.
+2. Rollup-family hosts turn the mirror's URL `sources` into mangled paths (`…/1.0.10/https:/jsr.io/…`); esbuild keeps
+   them. Emit `sources` as the source file name relative to the mirror file instead (L2/L11), and document that npm
+   files from Deno's global cache keep their `DENO_DIR` paths.
+3. Vite's import-attribute marker ids embed absolute paths (`\0deno:text:/Users/…`) that leak into output region
+   comments (L11): use root-relative paths.
+4. `nodeModulesDir: "auto"` with a `package.json` lets the engine install the package.json dependencies into
+   `node_modules/.deno` and re-point pnpm's links: detect a foreign package manager's `node_modules` and warn (or treat
+   as `manual`), and improve the `manual`-mode hint ("add to package.json and install, or move to deno.json").
+5. Running `deno run -A npm:vite build` with `nodeModulesDir: "none"` fails to resolve `unplugin` from our dist
+   (documented: use `--node-modules-dir=manual`); consider bundling nothing else but documenting this in the README.
+6. Pinned externals are not in a lockfile generated from the sources, so `deno run --frozen --cached-only` of the
+   output fails (S3: emit a sidecar `deno.lock`/`deno.json`).
+7. `config: 'browser/deno.json'` puts the mirror under `browser/node_modules`; document `cacheDir` for that setup.
+8. Add `"prepare": "tsdown"` (or equivalent) so a fresh clone works without a manual build.
+
 The plan is derived from the research reports in [`research/`](research/README.md) (about 5,100 lines, six parallel
 research passes over 30+ prior-art packages, the bundlers' current APIs, Deno 2.5–2.9 release notes, framework
 integrations and ~1,500 issues). Shorthand for issue references is in [research/README.md](research/README.md).

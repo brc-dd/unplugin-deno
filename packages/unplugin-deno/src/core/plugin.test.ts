@@ -30,7 +30,7 @@ describe('unpluginFactory', () => {
     expect(Object.keys(plugin.esbuild ?? {})).toEqual(['setup'])
   })
 
-  it('reports that the esbuild adapter is not available yet', () => {
+  it('setup rejects builders that are not esbuild with ENGINE_UNAVAILABLE', () => {
     const setup = unpluginFactory({}, meta('esbuild')).esbuild?.setup
     expect(() => setup?.({} as never)).toThrow(
       expect.objectContaining({ name: 'DenoPluginError', code: 'ENGINE_UNAVAILABLE' }),

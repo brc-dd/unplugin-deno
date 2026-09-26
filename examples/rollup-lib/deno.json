@@ -1,0 +1,11 @@
+{
+  "name": "@example/size-table",
+  "version": "0.1.0",
+  "exports": "./src/mod.ts",
+  "nodeModulesDir": "none",
+  "imports": {
+    "@std/collections": "jsr:@std/collections@^1",
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "string-width": "npm:string-width@^8"
+  }
+}

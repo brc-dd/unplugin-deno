@@ -1,0 +1,22 @@
+{
+  "name": "bench",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bench": "node scripts/bench.ts"
+  },
+  "dependencies": {
+    "@std/collections": "jsr:^1.4.0",
+    "@std/encoding": "jsr:^1.0.11",
+    "@std/fmt": "jsr:^1.0.10",
+    "@std/path": "jsr:^1.1.6",
+    "@std/text": "jsr:^1.1.0",
+    "marked": "^18.0.14",
+    "nanoid": "^6.0.1",
+    "string-width": "^8.3.0"
+  },
+  "devDependencies": {
+    "unplugin-deno": "workspace:*",
+    "vite": "^8.3.1"
+  }
+}

@@ -17,8 +17,8 @@ const entry: Record<string, string> = {
   ...Object.fromEntries(hosts.map((host) => [host, `src/${host}.ts`])),
   register: 'src/register.ts',
   api: 'src/api.ts',
-  // Not exported from package.json. Built on its own until the M1 engine imports it, so the
-  // `../vendor/deno-loader/*` imports are verifiably kept external in dist/.
+  // Not exported from package.json. Built as its own entry so the `../vendor/deno-loader/*`
+  // imports are verifiably kept external in dist/ (see src/entries.test.ts).
   'vendored-deno-loader': 'src/vendored-deno-loader.ts',
 }
 

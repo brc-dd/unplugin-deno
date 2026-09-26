@@ -1,0 +1,10 @@
+{
+  "nodeModulesDir": "none",
+  "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "esnext"]
+  },
+  "imports": {
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "marked": "npm:marked@^18"
+  }
+}

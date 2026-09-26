@@ -11,14 +11,17 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
 - `rolldown/`: `options` (platform, `cwd`, inputs; loads the project so the Rust-side filters can
   name import-map keys and the mirror directory), `resolveId`/`load` with native filters and
   `moduleType: 'js'`, `closeBundle`.
-- `rollup/`: `resolveId` turning `attributes.type` into the `?deno-type=` marker (no id filter,
-  so local imports with attributes reach it), `load` with a native filter, `closeBundle`.
+- `rollup/`: `options` (inputs, Rollup version), `resolveId` turning `attributes.type` into the
+  `?deno-type=` marker (no id filter, so local imports with attributes reach it), `load` with a
+  native filter, `closeBundle`. The generic transform pre-pass stays on (Rollup resolves each
+  specifier once per module, whatever its attributes).
 - `esbuild/`: the whole plugin on esbuild's own API (the factory returns only `esbuild.setup`,
   because unplugin's generic adapter would register a catch-all `onResolve` first):
-  - `index.ts`: `setup` loads the project (root `absWorkingDir`, platform and conditions from
-    `initialOptions`) and registers Go-side filters: owned schemes, the marker and the import-map
-    keys; bare specifiers only for importers the engine owns (Deno's global npm cache, the
-    mirror) when npm packages come from the global cache; `.css` imports for local
+  - `index.ts`: `setup` refuses hosts that are not esbuild (`Bun.build`), loads the project (root
+    `absWorkingDir`, platform and conditions from `initialOptions`) and registers Go-side
+    filters: owned schemes, the marker and the import-map keys; bare specifiers only for
+    importers the engine owns (Deno's global npm cache, the mirror, `node_modules` with
+    `npm: 'deno-cache'`) when npm packages come from the global cache; `.css` imports for local
     `with { type: "css" }`. Files are returned in the `file` namespace (esbuild loads them and
     the mirror's linked source maps), npm redirects go through `build.resolve` from the package
     (forwarding `sideEffects`), markers are synthesised in the `unplugin-deno` namespace under
@@ -32,7 +35,6 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
     the options `packages: 'external'` implies; `paths.ts`: namespace paths; `messages.ts`: errors
     as esbuild messages (code, hint note, `detail`) and the warning buffer; `snapshot.ts`:
     watched-file change detection.
-
 - `vite/`: hooks merged over the generic ones (Vite 8 and 7):
   - `index.ts`: `config` loads the project for the Vite root, appends the dev-only
     `https:`/`data:` alias after the configured aliases and defaults `cacheDir` to
@@ -53,7 +55,7 @@ what unplugin's generic hooks cannot express, reached through unplugin's escape 
     `data:` URLs during the scan, and the Rolldown optimizer plugin; `optimizer-esbuild.ts`: its
     esbuild twin for Vite 7's optimizer.
   - `marker.ts`: `\0deno:<type>:<file>.js` marker ids, which Vite's CSS, JSON and framework
-    plugins do not claim by extension; `install.ts`: installs `nodeModulesDir: "auto"` npm
-    packages (by adding their requirement to the engine) before their first resolution.
+    plugins do not claim by extension.
 
-webpack, Rspack, Rsbuild and Bun (M2) are not implemented yet.
+webpack, Rspack, Rsbuild, Bun and Farm are not implemented yet (M2): `core/plugin.ts` gives them
+an inert plugin.

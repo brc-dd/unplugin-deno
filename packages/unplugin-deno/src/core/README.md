@@ -5,12 +5,14 @@ The bundler-agnostic plugin
 imports a host package.
 
 - `plugin.ts`: the unplugin factory. The Rollup family (Rollup, Rolldown, Vite) gets the generic
-  hooks, with the Rolldown and Rollup specifics from `hosts/` under unplugin's escape hatches;
+  hooks, with the Rolldown, Rollup and Vite specifics from `hosts/` under unplugin's escape hatches;
   esbuild gets only `esbuild.setup`; other hosts are inert until their adapters land.
 - `state.ts`: `PluginState`, the per-instance build state (options re-resolved against the host
-  root, project, platform, engines, mirror, resolver) and the hook implementations
-  (`resolve`, `load`, `transform`, `watchChange`, `close`).
-- `options.ts`: `Options`, `resolveOptions` (every default in one place).
+  root, project, platform, engines, mirror, resolver; a resolver and mirror per resolve target
+  for hosts that build several platforms at once) and the hook implementations (`resolve`,
+  `load`, `transform`, `watchChange`, `close`).
+- `options.ts`: `Options`, `resolveOptions` (every default in one place; options of M2 features
+  are validated but have no effect yet).
 - `specifier.ts`, `id.ts`: specifier classification and the id scheme (queries, the
   `?deno-type=` marker, virtual ids, mirror paths, host filters).
 - `resolve.ts`: the `resolveId` algorithm (§5.2) returning a `ResolveOutcome`, and the filters.

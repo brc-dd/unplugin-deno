@@ -1,0 +1,12 @@
+{
+  "nodeModulesDir": "none",
+  "compilerOptions": {
+    "lib": ["dom", "dom.iterable", "esnext"]
+  },
+  "imports": {
+    "@/": "./src/",
+    "@std/html": "jsr:@std/html@^1",
+    "@std/text": "jsr:@std/text@^1",
+    "nanoid": "npm:nanoid@^6"
+  }
+}

@@ -1,3 +1,4 @@
+// @ts-self-types="./mod.d.ts"
 /**
  * Resolver and loader for Deno code.
  *

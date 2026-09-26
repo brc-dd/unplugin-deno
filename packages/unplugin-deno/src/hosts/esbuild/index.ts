@@ -425,8 +425,10 @@ async function onResolve(
   // esbuild checks its own `external` option only when no plugin resolved the import.
   if (isExternal(args.path, args.kind)) return undefined
   if (CSS_KINDS.has(args.kind) && isUrl(args.path)) return undefined
-  // `onStart` failed and esbuild goes on resolving: keep the build to that one error.
-  if (context.failed) return { path: args.path, external: true }
+  // `onStart` failed and esbuild goes on resolving: keep the build to that one error by marking
+  // the owned imports external. Paths are never ours (the broad filter used before the project is
+  // loaded matches Windows absolute paths such as `C:\…`, including the entry points).
+  if (context.failed) return isPathLike(args.path) ? undefined : { path: args.path, external: true }
   const type = args.with.type
   const id =
     state.options.importAttributes && isDenoType(type) ? withDenoType(args.path, type) : args.path
@@ -444,6 +446,11 @@ async function onResolve(
 function isUrl(specifier: string): boolean {
   const { kind } = parseSpecifier(specifier)
   return kind === 'https' || kind === 'http' || kind === 'data'
+}
+
+function isPathLike(specifier: string): boolean {
+  const { kind } = parseSpecifier(specifier)
+  return kind === 'absolute' || kind === 'relative'
 }
 
 /** Turns a core outcome into an esbuild `onResolve` result (§5.4, §5.5). */

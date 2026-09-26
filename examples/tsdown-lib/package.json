@@ -1,0 +1,13 @@
+{
+  "name": "tsdown-lib",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "check": "node scripts/check.ts"
+  },
+  "devDependencies": {
+    "tsdown": "^0.23.0",
+    "unplugin-deno": "workspace:*"
+  }
+}

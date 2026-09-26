@@ -1,0 +1,7 @@
+{
+  "nodeModulesDir": "none",
+  "imports": {
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "hono": "npm:hono@^4"
+  }
+}

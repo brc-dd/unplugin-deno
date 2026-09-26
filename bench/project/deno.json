@@ -1,0 +1,13 @@
+{
+  "nodeModulesDir": "none",
+  "imports": {
+    "@std/collections": "jsr:@std/collections@^1",
+    "@std/encoding": "jsr:@std/encoding@^1",
+    "@std/fmt": "jsr:@std/fmt@^1",
+    "@std/path": "jsr:@std/path@^1",
+    "@std/text": "jsr:@std/text@^1",
+    "marked": "npm:marked@^18",
+    "nanoid": "npm:nanoid@^6",
+    "string-width": "npm:string-width@^8"
+  }
+}
