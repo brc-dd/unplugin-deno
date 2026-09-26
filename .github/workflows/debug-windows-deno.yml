@@ -1,37 +1,56 @@
-# Temporary: prints how `deno info --json` reports file URLs, local cache paths and a synthetic
-# root module on Windows, to fix the `deno` engine there. Remove once the engine is green on the
-# windows/deno CI row.
-name: Debug windows deno info
+# Temporary: runs the `deno` engine contract tests on Windows under Node and under Deno with debug
+# output, to fix the engine on the windows/deno CI row. Remove once that row is green.
+name: Debug windows deno engine
 on:
   workflow_dispatch:
 jobs:
-  info:
+  engine:
     runs-on: windows-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: pnpm
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 26
-      - name: Probe
+      - run: pnpm install --frozen-lockfile
+      - name: Path shapes under Node and Deno
         shell: bash
         run: |
-          set -x
-          deno --version
-          node -e "const os=require('os');const fs=require('fs');console.log('tmpdir', os.tmpdir(), 'realpath', fs.realpathSync(os.tmpdir()));console.log('url', require('url').pathToFileURL(fs.realpathSync(os.tmpdir())).href)"
-          mkdir -p "$RUNNER_TEMP/probe/src"
-          cd "$RUNNER_TEMP/probe"
-          printf '{ "imports": { "@std/path": "jsr:@std/path@^1" } }\n' > deno.json
-          printf 'import "@std/path/posix";\nimport "https://deno.land/std@0.224.0/text/closest_string.ts";\nimport "npm:kleur@^4/colors";\nimport "./src/a.ts";\n' > root.ts
-          printf 'export const a = 1\n' > src/a.ts
-          deno eval "console.log('eval url', import.meta.url); console.log('cwd', Deno.cwd())"
-          deno info --json --config deno.json root.ts > info.json || true
-          node -e "const j=JSON.parse(require('fs').readFileSync('info.json','utf8'));console.log('roots', j.roots);for (const m of j.modules){console.log(m.kind, m.specifier, '->', m.local, m.mediaType, m.error ?? '');for (const d of m.dependencies ?? []) console.log('   dep', d.specifier, '=>', d.code?.specifier, d.code?.error ?? '')}console.log('redirects', j.redirects);console.log('npm', JSON.stringify(j.npmPackages).slice(0,600))"
-          echo '--- absolute file URL root ---'
-          ROOTURL=$(node -e "console.log(require('url').pathToFileURL(require('path').join(process.cwd(),'root.ts')).href)")
-          echo "$ROOTURL"
-          deno info --json --config deno.json "$ROOTURL" > info2.json || true
-          node -e "const j=JSON.parse(require('fs').readFileSync('info2.json','utf8'));console.log('roots', j.roots);console.log(j.modules.map(m=>m.specifier))"
-          echo '--- transpile ---'
-          deno transpile --help | head -40 || true
+          cat > probe.mjs <<'EOF'
+          import os from 'node:os'
+          import fs from 'node:fs'
+          import { realpath } from 'node:fs/promises'
+          import { pathToFileURL } from 'node:url'
+          const tmp = os.tmpdir()
+          console.log('runtime', typeof Deno === 'undefined' ? 'node' : 'deno ' + Deno.version.deno)
+          console.log('tmpdir', tmp)
+          console.log('realpathSync', fs.realpathSync(tmp))
+          console.log('realpathSync.native', fs.realpathSync.native(tmp))
+          console.log('promises.realpath', await realpath(tmp))
+          const dir = fs.mkdtempSync(tmp + '\\up-')
+          console.log('mkdtemp', dir, '->', await realpath(dir))
+          console.log('url', pathToFileURL(await realpath(dir)).href)
+          fs.rmSync(dir, { recursive: true })
+          EOF
+          node probe.mjs
+          deno run -A probe.mjs
+      - name: Contract test under Node (verbose, debug)
+        shell: bash
+        continue-on-error: true
+        env:
+          DEBUG: unplugin-deno
+        run: |
+          cd packages/unplugin-deno
+          pnpm exec vitest run src/engine/contract.test.ts -t "engine-basic" --reporter=verbose 2>&1 | tail -150
+      - name: Contract test under Deno (verbose, debug)
+        shell: bash
+        continue-on-error: true
+        env:
+          DEBUG: unplugin-deno
+        run: |
+          cd packages/unplugin-deno
+          deno run -A npm:vitest run src/engine/contract.test.ts -t "engine-basic" --reporter=verbose 2>&1 | tail -200
