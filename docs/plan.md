@@ -16,16 +16,16 @@ Open:
   warning meanwhile), S4's `resolve.builtins` experiment, L8, the source-phase imports of L6,
   `import.meta.filename`/`dirname` (L7), DCE constants such as `IS_BROWSER` (L9), CommonJS-only packages and the full
   import chain in X3/S5, and the Bun adapter (`unplugin-deno/bun` and `/farm` are inert).
-- From M1: the first publish (the release workflow and a clean JSR dry run are in place; npm waits for the one-time
-  setup, JSR also for loading the wasm from `https:` URLs, see [contributing.md](contributing.md#release)), the D8
-  docs, R6's `browser: false` mappings for packages from Deno's global cache, and P2's Deno Deploy and `deno desktop`
-  checks.
+- From M1: the first publish (the release workflow and a clean JSR dry run are in place, and the vendored loader now
+  loads its wasm from `https:` URLs too; npm waits for the one-time setup, JSR also for a public repository and
+  linking the package, see [contributing.md](contributing.md#release)), the D8 docs, R6's `browser: false` mappings for packages from Deno's
+  global cache, and P2's Deno Deploy and `deno desktop` checks.
 - M3 as planned, S7 included.
 
 CI (2026-09-26, commit 4a123a6): all 16 jobs pass on ubuntu, macOS and Windows (Node 22 and 26, Deno, Bun; lint,
 build and package checks; the examples). The Windows failures of the `deno` engine were one bug: `deno info` given an
 absolute Windows path read the drive letter as a URL scheme and reported the synthetic root module as external, so the
-engine now passes it as a `file:` URL. The JSR dry run still fails and runs with `continue-on-error`.
+engine now passes it as a `file:` URL. The JSR dry run passes and is a required CI step.
 
 **Follow-ups found by the examples (2026-09-26):**
 

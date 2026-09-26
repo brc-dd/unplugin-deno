@@ -252,11 +252,10 @@ release 0.1.0.
   exists, the workflow adds `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}` to `~/.npmrc` and passes the secret
   as `NODE_AUTH_TOKEN`; pnpm tries OIDC first and uses the token when the exchange fails. Delete the secret once trusted
   publishing works.
-- JSR, once the known issue below is fixed: the package exists (else create it at https://jsr.io/new, scope `@brc-dd`,
-  name `unplugin-deno`); link `brc-dd/unplugin-deno` in its Settings tab. JSR links only public GitHub repositories,
-  so the repository must be public first. Linking switches JSR publishing on: `deno publish` in the workflow then
-  authenticates with OIDC (no secret) and adds provenance, and the next run of `pnpm run release` publishes the
-  current version.
+- JSR: the package exists (else create it at https://jsr.io/new, scope `@brc-dd`, name `unplugin-deno`). What remains
+  is making the repository public (JSR links only public GitHub repositories) and linking `brc-dd/unplugin-deno` in the
+  package's Settings tab. Linking switches JSR publishing on: `deno publish` in the workflow then authenticates with OIDC (no secret) and adds
+  provenance, and the next run of `pnpm run release` publishes the current version.
 
 ### Publishing by hand
 
@@ -297,17 +296,20 @@ one-time password when the account uses 2FA, and `deno publish` opens the browse
   `mod.js`), so `scripts/vendor-loader.ts` restores the `[Symbol.dispose]()` members its generated declarations drop.
 - Vendored loader: `node scripts/vendor-loader.ts [version]` in `packages/unplugin-deno` (or
   `pnpm -F unplugin-deno vendor:loader`) downloads `@jsr/deno__loader` from npm.jsr.io, verifies its integrity,
-  copies the Node.js code path, applies patches that each assert how often their pattern occurs (so upstream drift
-  fails the script), adds `hooks.js` from `scripts/deno-loader-overlay/` and writes `NOTICE.md`. Output is
-  reproducible: re-running for the same version changes nothing, so `git diff` shows exactly what a new version
-  changes.
+  copies the glue of both wasm loading paths (`rs_lib_node.js` for `file:` URLs, `lib/rs_lib.js` for Deno loading the
+  JSR package from `https:` URLs; [architecture.md §4.2](architecture.md#42-loader-engine-vendored-denoloader-050)),
+  applies patches that each assert how often their pattern occurs (so upstream drift fails the script), adds
+  `hooks.js` from `scripts/deno-loader-overlay/` and writes `NOTICE.md`. Output is reproducible: re-running for the
+  same version changes nothing, so `git diff` shows exactly what a new version changes. Under Deno,
+  `src/vendored-deno-loader.remote.test.ts` loads `vendor/deno-loader/` from a local HTTP server the way JSR serves it.
 
 ### Known issues
 
-- Before linking the JSR package: under Deno, a JSR package is loaded from `https://jsr.io/…`, but the vendored glue
-  locates its wasm with `fileURLToPath(import.meta.url)` and `readFileSync` (the Node.js path, forced on every
-  runtime), so the default engine cannot load from JSR. The loader must fall back to a non-`file:` strategy (fetching
-  the wasm, or Deno's Wasm module import) first.
+- From JSR (`https://jsr.io/…` URLs under Deno), the Vite, Rolldown, Rollup and esbuild entries work
+  (`test/integration/jsr-served.test.ts` serves the built package over HTTP to a child `deno run`, like JSR does). The
+  webpack, Rspack and Rsbuild adapters locate unplugin's loader files with `require.resolve` from an installed package
+  (`src/hosts/webpack/unplugin-loaders.ts`), so from JSR they fail with `ENGINE_UNAVAILABLE` and a hint to install the
+  npm package; the README lists this under Limitations.
 - With the first release: remove the "First release pending" note from `README.md` (and its copy) in a commit to
   `main` before merging the version pull request, since npm and JSR show the README of the published version; while
   JSR publishing is off, also drop the `deno add jsr:@brc-dd/unplugin-deno` alternative from "Install".

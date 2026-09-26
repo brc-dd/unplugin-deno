@@ -15,7 +15,6 @@
  */
 import { existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { posix, win32 } from 'node:path'
 import type { SourceMapInput } from '@jridgewell/remapping'
 import remapping from '@jridgewell/remapping'
@@ -32,6 +31,7 @@ import { isDenoPluginError } from '../../diagnostics/errors.js'
 import type { PathFlavor } from '../../utils/path.js'
 import { HOST_PATH_FLAVOR } from '../../utils/path.js'
 import type { HostLogTarget } from '../shared.js'
+import { unpluginLoaderPath } from './unplugin-loaders.js'
 import type { ExternalResult, ExternalType, TakenPreset } from './presets.js'
 import { presetExternal } from './presets.js'
 
@@ -542,9 +542,6 @@ export interface LoaderUse {
   options: { plugin: { name: string; load: LoadHook } }
 }
 
-const requireFromHere = createRequire(import.meta.url)
-const loadLoaders = new Map<string, string>()
-
 /**
  * The `use` entry that runs `load` through unplugin's `load` loader for `host` (public entries of
  * the `unplugin` package: `unplugin/webpack/loaders/load`, `unplugin/rspack/loaders/load`). The
@@ -552,11 +549,7 @@ const loadLoaders = new Map<string, string>()
  * dependency of the module, and returns the result's code and source map.
  */
 export function loadLoader(host: 'webpack' | 'rspack', load: LoadHook, ident?: string): LoaderUse {
-  let loader = loadLoaders.get(host)
-  if (loader === undefined) {
-    loader = requireFromHere.resolve(`unplugin/${host}/loaders/load`)
-    loadLoaders.set(host, loader)
-  }
+  const loader = unpluginLoaderPath(host, 'load')
   const use: LoaderUse = { loader, options: { plugin: { name: TAP_NAME, load } } }
   if (ident !== undefined) use.ident = ident
   return use

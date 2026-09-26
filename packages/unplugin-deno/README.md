@@ -217,6 +217,8 @@ bundler and the plugin from `node_modules`.
   the next dev server start. webpack, Rspack and Rsbuild are tested with builds and watch mode, not
   with their dev servers.
 - Projects with a `package.json` (`nodeModulesDir: "manual"`) have no end-to-end build tests yet.
+- From JSR (the package running under Deno from `jsr.io` URLs), the webpack, Rspack and Rsbuild entries need the
+  npm package instead: they locate unplugin's loader files with `require`.
 - `unplugin-deno/register` and `createDenoResolver` from `unplugin-deno/api` (planned) throw
   `ENGINE_UNAVAILABLE`, and `unplugin-deno/esbuild` refuses `Bun.build`.
 - npm lifecycle scripts never run. Source maps of npm packages from Deno's global cache keep their

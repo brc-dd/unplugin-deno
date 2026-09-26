@@ -6,10 +6,27 @@
  *     node scripts/vendor-loader.ts [version]     # default: the `latest` dist-tag
  *
  * The script downloads `@jsr/deno__loader@<version>` from https://npm.jsr.io, verifies the
- * tarball integrity, copies the files the Node.js code path needs, applies the patches below and
- * writes `VERSION` and `NOTICE.md`. Every patch asserts how often its pattern occurs, so
- * re-vendoring a version whose glue changed fails loudly instead of silently shipping unpatched
- * code. Re-running it for the same version reproduces the committed files byte for byte.
+ * tarball integrity, copies the files of both wasm loading paths (see "Wasm loading"), applies
+ * the patches below and writes `VERSION` and `NOTICE.md`. Every patch asserts how often its
+ * pattern occurs, so re-vendoring a version whose glue changed fails loudly instead of silently
+ * shipping unpatched code. Re-running it for the same version reproduces the committed files byte
+ * for byte.
+ *
+ * Wasm loading. Upstream's `mod.js` picks its glue by runtime (`typeof Deno`); the patched one
+ * picks it by the scheme of its own URL (`import.meta.url`), so every runtime that loads the
+ * package from disk runs the same code:
+ *
+ * - `file:` (Node.js, Bun, and Deno from disk or `node_modules`): `rs_lib_node.js` reads
+ *   `lib/rs_lib.wasm` with `readFileSync` and instantiates it synchronously.
+ * - any other scheme (Deno loading the JSR package from `https://jsr.io/…`, where `readFileSync`
+ *   cannot read the wasm): `lib/rs_lib.js` imports `./rs_lib.wasm` as a module (Wasm ESM
+ *   integration, no import attribute: Deno 2.9 rejects `type: "wasm"`). Deno fetches the wasm
+ *   like any module and resolves its imports, `./rs_lib.internal.js` and `node:tty`, through the
+ *   module graph.
+ *
+ * Both paths bind the wasm to the same patched `lib/rs_lib.internal.js` (and through it
+ * `helpers.js` and `hooks.js`), which `assertWasmImports` checks. `mod.js` exports the path it
+ * took as `wasmLoadingPath` (`"node"` or `"esm"`).
  */
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -74,13 +91,20 @@ function modJsPatches(): Patch[] {
   return [
     {
       description:
-        'Always load the wasm through `rs_lib_node.js` (`readFileSync` + synchronous `WebAssembly.Module`/`Instance`) ' +
-        'on every runtime, instead of `import * as wasm from "./rs_lib.wasm"` when `typeof Deno !== "undefined"`. ' +
-        'The Deno-only `lib/rs_lib.js` is not vendored.',
+        'Pick the wasm glue by the scheme of `import.meta.url` instead of by runtime (`typeof Deno !== "undefined"`): ' +
+        'a `file:` URL imports `rs_lib_node.js` (`readFileSync` + synchronous `WebAssembly.Module`/`Instance`) on ' +
+        'Node.js, Bun and Deno alike, any other URL (Deno loading the package from JSR) imports `lib/rs_lib.js` ' +
+        '(`import * as wasm from "./rs_lib.wasm"`). The choice is exported as `wasmLoadingPath` (`"node"` or `"esm"`).',
       find: /let _lib;\s*if \(typeof Deno !== "undefined"\) \{\s*_lib = await import\("\.\/lib\/rs_lib\.js"\);\s*\} else \{\s*_lib = await import\("\.\/rs_lib_node\.js"\);\s*\}/,
       replace:
-        '// [unplugin-deno] patched: one wasm loading path on Node.js, Deno and Bun (see NOTICE.md).\n' +
-        'import * as _lib from "./rs_lib_node.js";\n' +
+        '// [unplugin-deno] patched: the glue follows the scheme of this URL, not the runtime (see NOTICE.md).\n' +
+        'export const wasmLoadingPath = import.meta.url.startsWith("file:") ? "node" : "esm";\n' +
+        'let _lib;\n' +
+        'if (wasmLoadingPath === "node") {\n' +
+        '  _lib = await import("./rs_lib_node.js");\n' +
+        '} else {\n' +
+        '  _lib = await import("./lib/rs_lib.js");\n' +
+        '}\n' +
         'import { emitDebug } from "./hooks.js";',
     },
     {
@@ -170,10 +194,12 @@ async function main(): Promise<void> {
         from: 'src/mod.js',
         to: 'mod.js',
         patches: modJsPatches(),
-        forbid: [NO_CONSOLE_IN_CODE, NO_DENO_BRANCH, NO_WASM_ESM_IMPORT, /rs_lib\.js"/],
+        forbid: [NO_CONSOLE_IN_CODE, NO_DENO_BRANCH, NO_WASM_ESM_IMPORT],
       },
       { from: '_dist/src/mod.d.ts', to: 'mod.d.ts', patches: modDtsPatches() },
+      // The two wasm loading paths (see the top of this file): `file:` URLs, other URLs.
       { from: 'src/rs_lib_node.js', to: 'rs_lib_node.js', forbid: [NO_DENO_BRANCH, NO_CONSOLE] },
+      { from: 'src/lib/rs_lib.js', to: 'lib/rs_lib.js', forbid: [NO_DENO_BRANCH, NO_CONSOLE] },
       {
         from: 'src/lib/rs_lib.internal.js',
         to: 'lib/rs_lib.internal.js',
@@ -199,6 +225,8 @@ async function main(): Promise<void> {
     ]
 
     await assertNodePath(extracted)
+    await assertEsmPath(extracted)
+    await assertWasmImports(extracted)
     await rm(vendorDir, { recursive: true, force: true })
     for (const file of files) {
       await vendorFile(extracted, file)
@@ -230,6 +258,18 @@ function modDtsPatches(): Patch[] {
       find: /( implements Disposable \{\n[^\n]*\bconstructor\([^)\n]*\);\n)(?!\s*\[Symbol\.dispose\])/,
       replace: '$1  [Symbol.dispose](): void;\n',
       count: 2,
+    },
+    {
+      description: 'Declare `wasmLoadingPath`, which the patched `mod.js` exports.',
+      find: /$/,
+      replace:
+        '/**\n' +
+        ' * How this copy loaded its wasm (added by unplugin-deno, see NOTICE.md): `"node"` when `mod.js`\n' +
+        ' * has a `file:` URL (`rs_lib_node.js`: `readFileSync` and synchronous instantiation), `"esm"`\n' +
+        ' * for any other URL, such as Deno loading the package from JSR (`lib/rs_lib.js` imports the\n' +
+        ' * wasm as a module).\n' +
+        ' */\n' +
+        'export declare const wasmLoadingPath: "node" | "esm";\n',
     },
   ]
 }
@@ -284,22 +324,62 @@ function assertCount(file: string, patch: Patch, found: number, expected: number
   }
 }
 
-/** The Node.js code path the patched `mod.js` relies on must look like 0.5.0's. */
+/** The modules the wasm imports; both loading paths must provide exactly these. */
+const WASM_IMPORT_MODULES = ['./rs_lib.internal.js', 'node:tty']
+
+/** The `file:` path the patched `mod.js` takes (`rs_lib_node.js`) must look like 0.5.0's. */
 async function assertNodePath(extracted: string): Promise<void> {
-  const nodeGlue = await readFile(join(extracted, 'src', 'rs_lib_node.js'), 'utf8')
-  const expectations = [
+  await assertGlue(extracted, 'src/rs_lib_node.js', [
     /readFileSync\(wasmPath\)/,
     /join\(__dirname, "lib", "rs_lib\.wasm"\)/,
     /new WebAssembly\.Module\(wasmBytes\)/,
-    /new WebAssembly\.Instance\(wasmModule,/,
+    /new WebAssembly\.Instance\(wasmModule, \{\s*"\.\/rs_lib\.internal\.js": internal,\s*"node:tty": \{ isatty \},\s*\}\)/,
     /__wbindgen_start\(\)/,
-  ]
+  ])
+}
+
+/** The path for other URLs (`lib/rs_lib.js`, Wasm ESM integration) must look like 0.5.0's. */
+async function assertEsmPath(extracted: string): Promise<void> {
+  await assertGlue(extracted, 'src/lib/rs_lib.js', [
+    /^import \* as wasm from "\.\/rs_lib\.wasm";$/m,
+    /^export \* from "\.\/rs_lib\.internal\.js";$/m,
+    /^__wbg_set_wasm\(wasm\);$/m,
+    /^wasm\.__wbindgen_start\(\);$/m,
+  ])
+}
+
+async function assertGlue(extracted: string, file: string, expectations: RegExp[]): Promise<void> {
+  const glue = await readFile(join(extracted, ...file.split('/')), 'utf8')
   for (const pattern of expectations) {
-    if (!pattern.test(nodeGlue)) {
-      throw new Error(
-        `src/rs_lib_node.js: expected ${pattern}; the Node.js wasm loading path changed.`,
-      )
+    if (!pattern.test(glue)) {
+      throw new Error(`${file}: expected ${pattern}; a wasm loading path changed.`)
     }
+  }
+}
+
+/**
+ * The wasm imports only `WASM_IMPORT_MODULES`: `rs_lib_node.js` passes them as its import
+ * object, and on the other path the module system resolves them relative to `lib/rs_lib.wasm`,
+ * so both paths bind the wasm to the same patched `lib/rs_lib.internal.js`.
+ */
+async function assertWasmImports(extracted: string): Promise<void> {
+  // The TypeScript libraries this script is checked with do not declare `WebAssembly`.
+  const { WebAssembly: wasmApi } = globalThis as unknown as {
+    WebAssembly: {
+      Module: {
+        new (bytes: Uint8Array): object
+        imports(module: object): Array<{ module: string }>
+      }
+    }
+  }
+  const bytes = await readFile(join(extracted, 'src', 'lib', 'rs_lib.wasm'))
+  const imports = wasmApi.Module.imports(new wasmApi.Module(bytes))
+  const modules = [...new Set(imports.map((entry) => entry.module))].toSorted()
+  if (modules.join('\n') !== WASM_IMPORT_MODULES.join('\n')) {
+    throw new Error(
+      `src/lib/rs_lib.wasm imports ${modules.join(', ')}; expected ${WASM_IMPORT_MODULES.join(', ')}. ` +
+        'Check that both wasm loading paths still provide its imports.',
+    )
   }
 }
 
@@ -311,7 +391,14 @@ async function smokeTest(): Promise<void> {
       throw new Error(`vendor/deno-loader/mod.js does not export ${name}.`)
     }
   }
-  console.log('Smoke test: vendored mod.js imports and instantiates the wasm.')
+  if (exports.wasmLoadingPath !== 'node') {
+    throw new Error(
+      `vendor/deno-loader/mod.js took the "${String(exports.wasmLoadingPath)}" path from a file: URL.`,
+    )
+  }
+  console.log(
+    'Smoke test: vendored mod.js imports and instantiates the wasm (file: URL, node path).',
+  )
 }
 
 async function renderNotice(
@@ -350,8 +437,23 @@ async function renderNotice(
     '| --- | --- | --- |',
     ...rows,
     '',
-    'Only the Node.js code path is vendored; `src/lib/rs_lib.js` (Deno-only Wasm ESM import), the',
-    'TypeScript sources, the Rust sources and source maps are omitted.',
+    'The TypeScript sources, the Rust sources and source maps are omitted.',
+    '',
+    '## Wasm loading',
+    '',
+    'Upstream `mod.js` picks its wasm glue by runtime (`typeof Deno`). The patched `mod.js` picks it',
+    'by the scheme of its own URL (`import.meta.url`) and exports the choice as `wasmLoadingPath`:',
+    '',
+    '- `"node"` for a `file:` URL (Node.js, Bun, and Deno loading the package from disk or',
+    '  `node_modules`): `rs_lib_node.js` reads `lib/rs_lib.wasm` with `readFileSync` and instantiates',
+    '  it synchronously.',
+    '- `"esm"` for any other URL (Deno loading the package from `https://jsr.io/…`, where',
+    '  `readFileSync` cannot read the wasm): `lib/rs_lib.js` imports `./rs_lib.wasm` as a module',
+    '  (Wasm ESM integration, without an import attribute). Deno fetches the wasm like any module and',
+    `  resolves its imports (${WASM_IMPORT_MODULES.map((name) => `\`${name}\``).join(', ')}) through the module graph.`,
+    '',
+    'Both paths bind the wasm to the same patched `lib/rs_lib.internal.js`, so the patches and',
+    '`hooks.js` apply to either; the script asserts that the wasm imports nothing else.',
     '',
     '## Patches',
     '',

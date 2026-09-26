@@ -34,6 +34,13 @@ describe(`vendored @deno/loader on ${runtime}`, () => {
     expect(first.ResolutionMode.Import).toBe(0)
   })
 
+  it('instantiates the wasm synchronously through rs_lib_node.js from a file: URL', async () => {
+    // Deno takes this path too when the package is on disk; vendored-deno-loader.remote.test.ts
+    // covers the other one (an `https:` URL, as when Deno loads the package from JSR).
+    const { wasmLoadingPath } = await loadVendoredDenoLoader()
+    expect(wasmLoadingPath).toBe('node')
+  })
+
   it(
     'resolves and loads jsr: and npm: dependencies of a deno.json project',
     { timeout: 120_000 },

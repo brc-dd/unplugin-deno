@@ -32,7 +32,8 @@ let loading: Promise<VendoredDenoLoader> | undefined
 
 /**
  * Imports the vendored loader on first use and returns the same module afterwards. The first call
- * reads and compiles the 5.5 MB wasm synchronously (about 85 ms cold).
+ * reads and compiles the 5.5 MB wasm synchronously from disk (about 85 ms cold); when Deno runs
+ * the package from JSR, it imports the wasm as a module instead (`wasmLoadingPath`, §4.2).
  *
  * @throws {DenoPluginError} `ENGINE_UNAVAILABLE` when the vendored files cannot be loaded.
  */

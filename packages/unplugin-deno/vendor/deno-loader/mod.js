@@ -43,8 +43,14 @@
 // Use the appropriate WASM loader for the runtime.
 // Deno natively supports WASM imports; Node.js needs manual instantiation.
 // deno-lint-ignore no-explicit-any
-// [unplugin-deno] patched: one wasm loading path on Node.js, Deno and Bun (see NOTICE.md).
-import * as _lib from "./rs_lib_node.js";
+// [unplugin-deno] patched: the glue follows the scheme of this URL, not the runtime (see NOTICE.md).
+export const wasmLoadingPath = import.meta.url.startsWith("file:") ? "node" : "esm";
+let _lib;
+if (wasmLoadingPath === "node") {
+  _lib = await import("./rs_lib_node.js");
+} else {
+  _lib = await import("./lib/rs_lib.js");
+}
 import { emitDebug } from "./hooks.js";
 const WasmLoader = _lib.DenoLoader;
 const WasmWorkspace = _lib.DenoWorkspace;

@@ -86,9 +86,7 @@ jobs:
       - run: pnpm build
       - run: pnpm -F unplugin-deno publint
       - run: pnpm -F unplugin-deno attw
-      # Known to fail until type-only declaration chunks are resolvable by Deno (docs/contributing.md#release).
       - name: JSR dry run
-        continue-on-error: true
         run: pnpm jsr:dry-run
 
   examples:

@@ -179,3 +179,10 @@ export interface EntrypointDiagnostic {
    * patch releases.
    */ getGraphUnstable(): unknown;
 }
+/**
+ * How this copy loaded its wasm (added by unplugin-deno, see NOTICE.md): `"node"` when `mod.js`
+ * has a `file:` URL (`rs_lib_node.js`: `readFileSync` and synchronous instantiation), `"esm"`
+ * for any other URL, such as Deno loading the package from JSR (`lib/rs_lib.js` imports the
+ * wasm as a module).
+ */
+export declare const wasmLoadingPath: "node" | "esm";

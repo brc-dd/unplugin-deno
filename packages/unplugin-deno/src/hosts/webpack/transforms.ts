@@ -28,7 +28,6 @@
  *
  * @module
  */
-import { createRequire } from 'node:module'
 import { join, normalize } from 'node:path'
 import { inlinesEnv } from '../../core/env.js'
 import { pathPrefixFilter, splitQuery } from '../../core/id.js'
@@ -40,6 +39,7 @@ import { transformCodeFilter } from '../../core/state.js'
 import { PLUGIN_VERSION } from '../../core/version.js'
 import { shortHash } from '../../utils/hash.js'
 import type { HostLogTarget } from '../shared.js'
+import { unpluginLoaderPath } from './unplugin-loaders.js'
 import type { LoaderUse, LoadHook, LoadHookResult, MirrorTransform } from './requests.js'
 import { loadLoader, mirrorLoad, TAP_NAME, toHostError } from './requests.js'
 
@@ -94,9 +94,6 @@ export interface AdapterRule {
   use: Array<LoaderUse | TransformLoaderUse>
 }
 
-const requireFromHere = createRequire(import.meta.url)
-const transformLoaders = new Map<string, string>()
-
 /**
  * The `use` entry that runs `hook` through unplugin's `transform` loader for `host` (the public
  * `unplugin/{webpack,rspack}/loaders/transform` entries): the loader calls
@@ -108,11 +105,7 @@ export function transformLoader(
   hook: TransformHook,
   ident: string,
 ): TransformLoaderUse {
-  let loader = transformLoaders.get(host)
-  if (loader === undefined) {
-    loader = requireFromHere.resolve(`unplugin/${host}/loaders/transform`)
-    transformLoaders.set(host, loader)
-  }
+  const loader = unpluginLoaderPath(host, 'transform')
   return { loader, ident, options: { plugin: { name: TAP_NAME, transform: hook } } }
 }
 
